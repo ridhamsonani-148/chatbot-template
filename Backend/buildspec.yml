@@ -1,0 +1,68 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 18
+      python: 3.11
+    commands:
+      - echo "Installing AWS CDK CLI..."
+      - npm install -g aws-cdk@2.100.0
+      - echo "Changing to Backend/cdk directory"
+      - cd Backend/cdk
+      - echo "Installing CDK dependencies..."
+      - npm ci
+
+  pre_build:
+    commands:
+      - echo "Building TypeScript sources..."
+      - npm run build
+      - echo "Bootstrapping CDK (if needed)..."
+      - cdk bootstrap --require-approval never
+
+  build:
+    commands:
+      - |
+        if [ "$ACTION" = "destroy" ]; then
+          echo "Destroying CDK stack...";
+          cdk destroy CatholicCharitiesStack --force \
+            --parameters GitHubToken="$GITHUB_TOKEN" \
+            --parameters GitHubOwner="$GITHUB_OWNER" \
+            --parameters GitHubRepo="$GITHUB_REPO_NAME" \
+            --parameters AmplifyGithubBranch="$GITHUB_BRANCH";
+        else
+          echo "Deploying CDK stack...";
+          cdk deploy CatholicCharitiesStack --require-approval never \
+            --parameters GitHubToken="$GITHUB_TOKEN" \
+            --parameters GitHubOwner="$GITHUB_OWNER" \
+            --parameters GitHubRepo="$GITHUB_REPO_NAME" \
+            --parameters AmplifyGithubBranch="$GITHUB_BRANCH";
+        fi
+
+  post_build:
+    commands:
+      - echo "CDK $ACTION complete."
+      - |
+        if [ "$ACTION" != "destroy" ]; then
+          echo "Getting stack outputs...";
+          aws cloudformation describe-stacks --stack-name CatholicCharitiesStack --query 'Stacks[0].Outputs' --output table;
+          echo "";
+          echo "🎉 Deployment Complete!";
+          echo "======================";
+          echo "";
+          echo "📋 Your Catholic Charities AI Assistant is ready:";
+          echo "";
+          API_URL=$(aws cloudformation describe-stacks --stack-name CatholicCharitiesStack --query 'Stacks[0].Outputs[?OutputKey==`ApiGatewayUrl`].OutputValue' --output text);
+          AMPLIFY_URL=$(aws cloudformation describe-stacks --stack-name CatholicCharitiesStack --query 'Stacks[0].Outputs[?OutputKey==`AmplifyAppUrl`].OutputValue' --output text);
+          QBUSINESS_ID=$(aws cloudformation describe-stacks --stack-name CatholicCharitiesStack --query 'Stacks[0].Outputs[?OutputKey==`QBusinessApplicationId`].OutputValue' --output text);
+          echo "🌐 Frontend URL: $AMPLIFY_URL";
+          echo "🔗 API Gateway: $API_URL";
+          echo "🤖 Q Business App ID: $QBUSINESS_ID";
+          echo "";
+          echo "✅ All components deployed successfully!";
+        fi
+
+artifacts:
+  files:
+    - '**/*'
+  base-directory: 'Backend/cdk/cdk.out'

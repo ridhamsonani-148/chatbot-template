@@ -18,7 +18,7 @@ export const BOTMESSAGE_BACKGROUND ="#DDEAF3" // Light purple for bot messages
 export const USERMESSAGE_BACKGROUND = "#E7E3F0" // Light purple for user messages
 
 // API endpoints
-export const CHAT_API = process.env.REACT_APP_CHAT_API
+export const CHAT_ENDPOINT = "https://2l3utu419i.execute-api.us-west-2.amazonaws.com/test/chat"
 export const WEBSOCKET_API = process.env.REACT_APP_WEBSOCKET_API
 
 // Features
