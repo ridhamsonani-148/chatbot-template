@@ -4,14 +4,14 @@ phases:
   install:
     runtime-versions:
       nodejs: 18
-      python: 3.11
+      python: 3.13
     commands:
       - echo "Installing AWS CDK CLI..."
       - npm install -g aws-cdk@2.100.0
       - echo "Changing to Backend/cdk directory"
       - cd Backend/cdk
       - echo "Installing CDK dependencies..."
-      - npm ci
+      - npm install
 
   pre_build:
     commands:
