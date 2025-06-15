@@ -3,7 +3,7 @@ import * as s3 from "aws-cdk-lib/aws-s3"
 import * as lambda from "aws-cdk-lib/aws-lambda"
 import * as apigateway from "aws-cdk-lib/aws-apigateway"
 import * as iam from "aws-cdk-lib/aws-iam"
-import * as amplify from "aws-cdk-lib/aws-amplify"
+import * as amplify from "@aws-cdk/aws-amplify-alpha"
 import * as ssm from "aws-cdk-lib/aws-ssm"
 import type { Construct } from "constructs"
 
@@ -423,45 +423,20 @@ def handler(event, context):
       description: "Chat API endpoint URL",
     })
 
-    // 8. Create Amplify App
+    // 8. Create Amplify App (Simplified without GitHub integration for now)
+    // We'll use Parameter Store to pass the API URL to the frontend
     const amplifyApp = new amplify.App(this, "CatholicCharitiesAmplifyApp", {
       appName: "catholic-charities-assistant",
       description: "Catholic Charities AI Assistant Frontend",
-      sourceCodeProvider: new amplify.GitHubSourceCodeProvider({
-        owner: githubOwner.valueAsString,
-        repository: githubRepo.valueAsString,
-        oauthToken: cdk.SecretValue.unsafePlainText(githubToken.valueAsString),
-      }),
       environmentVariables: {
         REACT_APP_API_BASE_URL: api.url,
         REACT_APP_CHAT_ENDPOINT: `${api.url}chat`,
         REACT_APP_HEALTH_ENDPOINT: `${api.url}health`,
       },
-      buildSpec: cdk.BuildSpec.fromObject({
-        version: "1.0",
-        frontend: {
-          phases: {
-            preBuild: {
-              commands: ["npm ci"],
-            },
-            build: {
-              commands: ["npm run build"],
-            },
-          },
-          artifacts: {
-            baseDirectory: "build",
-            files: ["**/*"],
-          },
-          cache: {
-            paths: ["node_modules/**/*"],
-          },
-        },
-      }),
     })
 
-    // Add main branch
-    const mainBranch = amplifyApp.addBranch(amplifyGithubBranch.valueAsString, {
-      autoBuild: true,
+    // Add a branch (you can connect to GitHub later via console)
+    const mainBranch = amplifyApp.addBranch("main", {
       stage: "PRODUCTION",
     })
 
