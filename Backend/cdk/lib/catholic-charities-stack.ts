@@ -64,7 +64,7 @@ export class CatholicCharitiesStack extends cdk.Stack {
 
     // 3. Custom Resource Lambda for complete setup
     const setupLambda = new lambda.Function(this, "SetupLambda", {
-      runtime: lambda.Runtime.PYTHON_3_9,
+      runtime: lambda.Runtime.PYTHON_3_13,
       handler: "index.handler",
       timeout: cdk.Duration.minutes(15),
       memorySize: 1024,
@@ -352,7 +352,7 @@ def handler(event, context):
 
     // 5. Create Lambda function for chat API (from Backend/lambda/lambda_function.py)
     const chatLambda = new lambda.Function(this, "ChatLambda", {
-      runtime: lambda.Runtime.PYTHON_3_9,
+      runtime: lambda.Runtime.PYTHON_3_13,
       handler: "lambda_function.lambda_handler",
       code: lambda.Code.fromAsset("Backend/lambda"), // Points to your lambda code
       timeout: cdk.Duration.seconds(30),
