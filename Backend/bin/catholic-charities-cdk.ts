@@ -12,17 +12,9 @@ const githubToken = app.node.tryGetContext("githubToken") || process.env.GITHUB_
 const projectName = app.node.tryGetContext("projectName") || process.env.PROJECT_NAME || "catholic-charities-chatbot"
 const urlFilesPath = app.node.tryGetContext("urlFilesPath") || process.env.URL_FILES_PATH || "data-sources"
 
-// Default data source URLs for Catholic Charities
-const defaultUrls = [
-  "https://www.catholiccharitiesusa.org/",
-  "https://www.catholiccharitiesusa.org/our-ministry/",
-  "https://www.catholiccharitiesusa.org/find-help/",
-  "https://www.catholiccharitiesusa.org/ways-to-give/",
-]
-
-const dataSourceUrls =
-  app.node.tryGetContext("dataSourceUrls") ||
-  (process.env.DATA_SOURCE_URLS ? process.env.DATA_SOURCE_URLS.split(",") : defaultUrls)
+// Optional: Organization Identity Center ARN (if account doesn't have Identity Center enabled)
+const identityCenterInstanceArn =
+  app.node.tryGetContext("identityCenterInstanceArn") || process.env.IDENTITY_CENTER_INSTANCE_ARN
 
 if (!githubOwner || !githubRepo || !githubToken) {
   throw new Error("GitHub owner, repo, and token must be provided via context or environment variables")
@@ -34,6 +26,7 @@ new CatholicCharitiesStack(app, "CatholicCharitiesStack", {
   githubToken,
   projectName,
   urlFilesPath,
+  identityCenterInstanceArn, // This can be undefined if not provided
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION || "us-east-1",

@@ -51,6 +51,22 @@ if [ -z "${URL_FILES_PATH:-}" ]; then
   URL_FILES_PATH=${URL_FILES_PATH:-data-sources}
 fi
 
+# Prompt for AWS region (default to us-east-1 for Q Business availability)
+if [ -z "${AWS_REGION:-}" ]; then
+  read -rp "Enter AWS region [default: us-east-1]: " AWS_REGION
+  AWS_REGION=${AWS_REGION:-us-east-1}
+fi
+
+# Prompt for Identity Center ARN (optional)
+if [ -z "${IDENTITY_CENTER_INSTANCE_ARN:-}" ]; then
+  echo ""
+  echo "🔍 Identity Center Configuration:"
+  echo "If your account doesn't have Identity Center enabled but your organization does,"
+  echo "you can provide the organization's Identity Center ARN."
+  echo ""
+  read -rp "Enter Identity Center Instance ARN (optional, press Enter to auto-detect): " IDENTITY_CENTER_INSTANCE_ARN
+fi
+
 # Validate that URL files exist (check locally if running from Backend directory)
 if [ -d "$URL_FILES_PATH" ]; then
   # Check for .txt files
@@ -126,18 +142,26 @@ fi
 CODEBUILD_PROJECT_NAME="${PROJECT_NAME}-deploy"
 echo "Creating CodeBuild project: $CODEBUILD_PROJECT_NAME"
 
+# Build environment variables array
+ENV_VARS='[
+  {"name": "GITHUB_OWNER", "value": "'"$GITHUB_OWNER"'", "type": "PLAINTEXT"},
+  {"name": "GITHUB_REPO", "value": "'"$GITHUB_REPO"'", "type": "PLAINTEXT"},
+  {"name": "GITHUB_TOKEN", "value": "'"$GITHUB_TOKEN"'", "type": "PLAINTEXT"},
+  {"name": "PROJECT_NAME", "value": "'"$PROJECT_NAME"'", "type": "PLAINTEXT"},
+  {"name": "URL_FILES_PATH", "value": "'"$URL_FILES_PATH"'", "type": "PLAINTEXT"},
+  {"name": "ACTION", "value": "'"$ACTION"'", "type": "PLAINTEXT"},
+  {"name": "CDK_DEFAULT_REGION", "value": "'"$AWS_REGION"'", "type": "PLAINTEXT"}'
+
+# Add Identity Center ARN if provided
+if [ -n "$IDENTITY_CENTER_INSTANCE_ARN" ]; then
+  ENV_VARS=$(echo "$ENV_VARS" | sed 's/]$/,{"name": "IDENTITY_CENTER_INSTANCE_ARN", "value": "'"$IDENTITY_CENTER_INSTANCE_ARN"'", "type": "PLAINTEXT"}]/')
+fi
+
 ENVIRONMENT='{
   "type": "LINUX_CONTAINER",
   "image": "aws/codebuild/standard:7.0",
   "computeType": "BUILD_GENERAL1_MEDIUM",
-  "environmentVariables": [
-    {"name": "GITHUB_OWNER", "value": "'"$GITHUB_OWNER"'", "type": "PLAINTEXT"},
-    {"name": "GITHUB_REPO", "value": "'"$GITHUB_REPO"'", "type": "PLAINTEXT"},
-    {"name": "GITHUB_TOKEN", "value": "'"$GITHUB_TOKEN"'", "type": "PLAINTEXT"},
-    {"name": "PROJECT_NAME", "value": "'"$PROJECT_NAME"'", "type": "PLAINTEXT"},
-    {"name": "URL_FILES_PATH", "value": "'"$URL_FILES_PATH"'", "type": "PLAINTEXT"},
-    {"name": "ACTION", "value": "'"$ACTION"'", "type": "PLAINTEXT"}
-  ]
+  "environmentVariables": '"$ENV_VARS"'
 }'
 
 ARTIFACTS='{"type":"NO_ARTIFACTS"}'
@@ -191,6 +215,12 @@ echo "=== Deployment Information ==="
 echo "Project Name: $PROJECT_NAME"
 echo "GitHub Repo: $GITHUB_OWNER/$GITHUB_REPO"
 echo "URL Files Path: $URL_FILES_PATH (in Backend directory)"
+echo "AWS Region: $AWS_REGION"
+if [ -n "$IDENTITY_CENTER_INSTANCE_ARN" ]; then
+  echo "Identity Center ARN: $IDENTITY_CENTER_INSTANCE_ARN"
+else
+  echo "Identity Center ARN: Auto-detect"
+fi
 if [ -d "$URL_FILES_PATH" ]; then
   echo "URL Files Found: $(find "$URL_FILES_PATH" -name "*.txt" 2>/dev/null | wc -l)"
 fi
