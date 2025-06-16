@@ -8,14 +8,31 @@ phases:
     commands:
       - echo "Installing AWS CDK CLI..."
       - npm install -g aws-cdk@2.161.1
+      - echo "Current directory:"
+      - pwd
+      - echo "Listing root directory:"
+      - ls -la
+      - echo "Changing into Backend directory"
       - cd Backend
+      - echo "Listing Backend directory:"
+      - ls -la
+      - echo "Checking for required files:"
+      - ls -la bin/ || echo "bin directory not found"
+      - ls -la lib/ || echo "lib directory not found"
+      - ls -la lambda/ || echo "lambda directory not found"
+      - ls -la data-sources/ || echo "data-sources directory not found"
       - echo "Installing dependencies..."
-      - npm install
+      - npm ci
 
   pre_build:
     commands:
       - echo "Building TypeScript sources..."
       - npm run build
+      - echo "Listing compiled files:"
+      - ls -la bin/ || echo "No bin directory after build"
+      - ls -la lib/ || echo "No lib directory after build"
+      - echo "Checking data-sources directory:"
+      - ls -la data-sources/ || echo "data-sources directory not found"
       - echo "Bootstrapping CDK..."
       - cdk bootstrap --require-approval never
 

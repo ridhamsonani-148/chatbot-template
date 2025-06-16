@@ -45,39 +45,31 @@ if [ -z "${PROJECT_NAME:-}" ]; then
   PROJECT_NAME=${PROJECT_NAME:-catholic-charities-chatbot}
 fi
 
-# Prompt for URL files path
+# Prompt for URL files path (relative to Backend directory)
 if [ -z "${URL_FILES_PATH:-}" ]; then
-  read -rp "Enter path to URL files in repository [default: data-sources]: " URL_FILES_PATH
+  read -rp "Enter path to URL files in Backend directory [default: data-sources]: " URL_FILES_PATH
   URL_FILES_PATH=${URL_FILES_PATH:-data-sources}
 fi
 
-# Validate that URL files exist
-if [ ! -d "$URL_FILES_PATH" ]; then
-  echo "Error: URL files directory '$URL_FILES_PATH' not found."
-  echo "Please create the directory and add .txt files with URLs."
-  exit 1
-fi
-
-# Check for .txt files
-txt_files=$(find "$URL_FILES_PATH" -name "*.txt" 2>/dev/null | wc -l)
-if [ "$txt_files" -eq 0 ]; then
-  echo "Warning: No .txt files found in '$URL_FILES_PATH'."
-  echo "Please add .txt files with URLs (one URL per line)."
-  read -rp "Continue anyway? (y/n): " CONTINUE
-  CONTINUE=$(printf '%s' "$CONTINUE" | tr '[:upper:]' '[:lower:]')
-  if [[ "$CONTINUE" != "y" && "$CONTINUE" != "yes" ]]; then
-    exit 1
+# Validate that URL files exist (check locally if running from Backend directory)
+if [ -d "$URL_FILES_PATH" ]; then
+  # Check for .txt files
+  txt_files=$(find "$URL_FILES_PATH" -name "*.txt" 2>/dev/null | wc -l)
+  if [ "$txt_files" -eq 0 ]; then
+    echo "Warning: No .txt files found in '$URL_FILES_PATH'."
+    echo "Please add .txt files with URLs (one URL per line)."
+    read -rp "Continue anyway? (y/n): " CONTINUE
+    CONTINUE=$(printf '%s' "$CONTINUE" | tr '[:upper:]' '[:lower:]')
+    if [[ "$CONTINUE" != "y" && "$CONTINUE" != "yes" ]]; then
+      exit 1
+    fi
+  else
+    echo "Found $txt_files URL file(s) in '$URL_FILES_PATH':"
+    find "$URL_FILES_PATH" -name "*.txt" -exec basename {} \;
   fi
 else
-  echo "Found $txt_files URL file(s) in '$URL_FILES_PATH':"
-  find "$URL_FILES_PATH" -name "*.txt" -exec basename {} \;
-fi
-
-if [ -z "${DATA_SOURCE_URLS:-}" ]; then
-  echo "Enter data source URLs (comma-separated):"
-  echo "Default: https://www.catholiccharitiesusa.org/,https://www.catholiccharitiesusa.org/our-ministry/,https://www.catholiccharitiesusa.org/find-help/,https://www.catholiccharitiesusa.org/ways-to-give/"
-  read -rp "URLs [press Enter for default]: " DATA_SOURCE_URLS
-  DATA_SOURCE_URLS=${DATA_SOURCE_URLS:-"https://www.catholiccharitiesusa.org/,https://www.catholiccharitiesusa.org/our-ministry/,https://www.catholiccharitiesusa.org/find-help/,https://www.catholiccharitiesusa.org/ways-to-give/"}
+  echo "Warning: URL files directory '$URL_FILES_PATH' not found locally."
+  echo "This is normal if running from a different location. The build will check during deployment."
 fi
 
 if [ -z "${ACTION:-}" ]; then
@@ -198,8 +190,10 @@ echo ""
 echo "=== Deployment Information ==="
 echo "Project Name: $PROJECT_NAME"
 echo "GitHub Repo: $GITHUB_OWNER/$GITHUB_REPO"
-echo "URL Files Path: $URL_FILES_PATH"
-echo "URL Files Found: $txt_files"
+echo "URL Files Path: $URL_FILES_PATH (in Backend directory)"
+if [ -d "$URL_FILES_PATH" ]; then
+  echo "URL Files Found: $(find "$URL_FILES_PATH" -name "*.txt" 2>/dev/null | wc -l)"
+fi
 echo "Action: $ACTION"
 echo "Build ID: $BUILD_ID"
 echo ""
