@@ -307,20 +307,6 @@ def handler(event, context):
       },
     })
 
-    // Create deployment with throttling
-    const deployment = new apigateway.Deployment(this, "ApiDeployment", {
-      api: api,
-    })
-
-    const stage = new apigateway.Stage(this, "ApiStage", {
-      deployment: deployment,
-      stageName: "prod",
-      throttle: {
-        rateLimit: 100,
-        burstLimit: 200,
-      },
-    })
-
     // API Gateway Integration
     const lambdaIntegration = new apigateway.LambdaIntegration(chatLambda, {
       requestTemplates: { "application/json": '{ "statusCode": "200" }' },
@@ -346,17 +332,18 @@ applications:
       phases:
         preBuild:
           commands:
+            - cd Frontend
             - npm ci
         build:
           commands:
             - npm run build
       artifacts:
-        baseDirectory: build
+        baseDirectory: Frontend/build
         files:
           - '**/*'
       cache:
         paths:
-          - node_modules/**/*`,
+          - Frontend/node_modules/**/*`,
       environmentVariables: [
         {
           name: "REACT_APP_API_BASE_URL",
