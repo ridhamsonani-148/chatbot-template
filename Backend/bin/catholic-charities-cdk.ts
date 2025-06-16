@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import "source-map-support/register"
 import * as cdk from "aws-cdk-lib"
-import { CatholicCharitiesStack } from "../lib/catholic-charities-stack"
+import { CatholicCharitiesStack1 } from "../lib/catholic-charities-stack"
 
 const app = new cdk.App()
 
@@ -20,7 +20,7 @@ if (!githubOwner || !githubRepo || !githubToken) {
   throw new Error("GitHub owner, repo, and token must be provided via context or environment variables")
 }
 
-new CatholicCharitiesStack(app, "CatholicCharitiesStack", {
+new CatholicCharitiesStack1(app, "CatholicCharitiesStack1", {
   githubOwner,
   githubRepo,
   githubToken,

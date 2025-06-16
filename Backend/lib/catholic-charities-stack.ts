@@ -18,7 +18,7 @@ export interface CatholicCharitiesStackProps extends cdk.StackProps {
   readonly identityCenterInstanceArn: string; // Required, no fallback
 }
 
-export class CatholicCharitiesStack extends cdk.Stack {
+export class CatholicCharitiesStack1 extends cdk.Stack {
   constructor(scope: Construct, id: string, props: CatholicCharitiesStackProps) {
     super(scope, id, props);
 
