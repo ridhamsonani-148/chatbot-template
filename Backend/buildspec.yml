@@ -52,7 +52,7 @@ phases:
           echo "URL files found in $URL_FILES_PATH:";
           ls -la "$URL_FILES_PATH"/*.txt || echo "No .txt files found in $URL_FILES_PATH";
           
-          cdk deploy CatholicCharitiesStack3 --require-approval never \
+          cdk deploy CatholicCharitiesStack4 --require-approval never \
             --context githubOwner="$GITHUB_OWNER" \
             --context githubRepo="$GITHUB_REPO" \
             --context githubToken="$GITHUB_TOKEN" \
