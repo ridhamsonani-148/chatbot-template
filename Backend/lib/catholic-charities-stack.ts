@@ -305,12 +305,19 @@ def handler(event, context):
         allowMethods: apigateway.Cors.ALL_METHODS,
         allowHeaders: ["Content-Type", "X-Amz-Date", "Authorization", "X-Api-Key", "X-Amz-Security-Token"],
       },
-      deployOptions: {
-        stageName: "prod",
-        throttle: {
-          rateLimit: 100,
-          burstLimit: 200,
-        },
+    })
+
+    // Create deployment with throttling
+    const deployment = new apigateway.Deployment(this, "ApiDeployment", {
+      api: api,
+    })
+
+    const stage = new apigateway.Stage(this, "ApiStage", {
+      deployment: deployment,
+      stageName: "prod",
+      throttle: {
+        rateLimit: 100,
+        burstLimit: 200,
       },
     })
 
@@ -328,64 +335,51 @@ def handler(event, context):
     healthResource.addMethod("GET", lambdaIntegration)
 
     // Amplify App for Frontend
-    const amplifyApp = new amplify.App(this, "AmplifyApp", {
-      appName: `${projectName}-frontend`,
+    const amplifyApp = new amplify.CfnApp(this, "AmplifyApp", {
+      name: `${projectName}-frontend`,
       description: "Catholic Charities Chatbot Frontend",
-      sourceCodeProvider: new amplify.GitHubSourceCodeProvider({
-        owner: props.githubOwner,
-        repository: props.githubRepo,
-        oauthToken: cdk.SecretValue.unsafePlainText(props.githubToken),
-      }),
-      buildSpec: cdk.aws_codebuild.BuildSpec.fromObject({
-        version: "1.0",
-        applications: [
-          {
-            frontend: {
-              phases: {
-                preBuild: {
-                  commands: ["npm ci"],
-                },
-                build: {
-                  commands: ["npm run build"],
-                },
-              },
-              artifacts: {
-                baseDirectory: "build",
-                files: ["**/*"],
-              },
-              cache: {
-                paths: ["node_modules/**/*"],
-              },
-            },
-          },
-        ],
-      }),
-      environmentVariables: {
-        REACT_APP_API_BASE_URL: api.url,
-        REACT_APP_CHAT_ENDPOINT: `${api.url}chat`,
-        REACT_APP_HEALTH_ENDPOINT: `${api.url}health`,
-      },
-      autoBranchCreation: {
-        patterns: ["main", "master"],
-        autoBuild: true,
-      },
+      repository: `https://github.com/${props.githubOwner}/${props.githubRepo}`,
+      accessToken: props.githubToken,
+      buildSpec: `version: 1
+applications:
+  - frontend:
+      phases:
+        preBuild:
+          commands:
+            - npm ci
+        build:
+          commands:
+            - npm run build
+      artifacts:
+        baseDirectory: build
+        files:
+          - '**/*'
+      cache:
+        paths:
+          - node_modules/**/*`,
+      environmentVariables: [
+        {
+          name: "REACT_APP_API_BASE_URL",
+          value: api.url,
+        },
+        {
+          name: "REACT_APP_CHAT_ENDPOINT",
+          value: `${api.url}chat`,
+        },
+        {
+          name: "REACT_APP_HEALTH_ENDPOINT",
+          value: `${api.url}health`,
+        },
+      ],
     })
 
     // Main branch
-    const mainBranch = amplifyApp.addBranch("main", {
-      autoBuild: true,
+    const mainBranch = new amplify.CfnBranch(this, "MainBranch", {
+      appId: amplifyApp.attrAppId,
+      branchName: "main",
+      enableAutoBuild: true,
       stage: "PRODUCTION",
     })
-
-    // Custom Domain (optional)
-    // const domain = amplifyApp.addDomain('your-domain.com', {
-    //   subDomains: [
-    //     {
-    //       branch: mainBranch,
-    //       prefix: 'chat',
-    //     },
-    //   ],
-    // });
 
     // Outputs
     new cdk.CfnOutput(this, "QBusinessApplicationId", {
@@ -418,8 +412,13 @@ def handler(event, context):
       description: "Health Check Endpoint",
     })
 
+    new cdk.CfnOutput(this, "AmplifyAppId", {
+      value: amplifyApp.attrAppId,
+      description: "Amplify App ID",
+    })
+
     new cdk.CfnOutput(this, "AmplifyAppURL", {
-      value: `https://${mainBranch.branchName}.${amplifyApp.defaultDomain}`,
+      value: `https://${mainBranch.branchName}.${amplifyApp.attrDefaultDomain}`,
       description: "Amplify App URL",
     })
 
