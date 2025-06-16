@@ -430,7 +430,7 @@ applications:
     new cdk.CfnOutput(this, "HealthEndpoint", { value: `${api.url}health` });
     new cdk.CfnOutput(this, "AmplifyAppId", { value: amplifyApp.attrAppId });
     new cdk.CfnOutput(this, "AmplifyAppURL", { value: `https://${mainBranch.branchName}.${amplifyApp.attrDefaultDomain}` });
-    new cdk.fnOutput(this, "S3Bucket", { value: dataBucket.bucketName });
+    new cdk.CfnOutput(this, "S3Bucket", { value: dataBucket.bucketName });
     new cdk.CfnOutput(this, "IdentityCenterInstanceArn", { value: identityCenterInstanceArn });
   }
 }
