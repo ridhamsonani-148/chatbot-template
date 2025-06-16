@@ -28,7 +28,7 @@ export class CatholicCharitiesStack1 extends cdk.Stack {
 
     // S3 Bucket for data sources
     const dataBucket = new s3.Bucket(this, "DataSourceBucket", {
-      bucketName: `${projectName}-data-sources-${this.account}-${this.region}`,
+      bucketName: `${projectName}-data-sources-cathoic-charities2`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
       versioned: false,
