@@ -1,5 +1,5 @@
 {
-  "app": "npx ts-node --prefer-ts-exts bin/catholic-charities-app.ts",
+  "app": "npx ts-node --prefer-ts-exts bin/catholic-charities-cdk.ts",
   "watch": {
     "include": ["**"],
     "exclude": [
