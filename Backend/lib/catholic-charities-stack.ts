@@ -1,32 +1,129 @@
-import * as cdk from "aws-cdk-lib";
-import * as s3 from "aws-cdk-lib/aws-s3";
-import * as lambda from "aws-cdk-lib/aws-lambda";
-import * as apigateway from "aws-cdk-lib/aws-apigateway";
-import * as iam from "aws-cdk-lib/aws-iam";
-import * as amplify from "aws-cdk-lib/aws-amplify";
-import * as qbusiness from "aws-cdk-lib/aws-qbusiness";
-import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
-import * as path from "path";
-import type { Construct } from "constructs";
+import * as cdk from "aws-cdk-lib"
+import * as s3 from "aws-cdk-lib/aws-s3"
+import * as lambda from "aws-cdk-lib/aws-lambda"
+import * as apigateway from "aws-cdk-lib/aws-apigateway"
+import * as iam from "aws-cdk-lib/aws-iam"
+import * as amplify from "aws-cdk-lib/aws-amplify"
+import * as qbusiness from "aws-cdk-lib/aws-qbusiness"
+import * as s3deploy from "aws-cdk-lib/aws-s3-deployment"
+import type { Construct } from "constructs"
+import * as path from "path"
 
 export interface CatholicCharitiesStackProps extends cdk.StackProps {
-  readonly githubOwner: string;
-  readonly githubRepo: string;
-  readonly githubToken: string;
-  readonly projectName?: string;
-  readonly urlFilesPath?: string;
-  readonly identityCenterInstanceArn?: string;
+  readonly githubOwner: string
+  readonly githubRepo: string
+  readonly githubToken: string
+  readonly projectName?: string
+  readonly urlFilesPath?: string // Path to URL files in the repo
+  readonly identityCenterInstanceArn?: string // Optional: Organization's Identity Center ARN
 }
 
 export class CatholicCharitiesStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: CatholicCharitiesStackProps) {
-    super(scope, id, props);
+    super(scope, id, props)
 
-    const projectName = props.projectName || "catholic-charities-chatbot";
-    const urlFilesPath = props.urlFilesPath || "data-sources";
+    const projectName = props.projectName || "catholic-charities-chatbot"
+    const urlFilesPath = props.urlFilesPath || "data-sources" // Default path for URL files
 
-    // Handle Identity Center ARN
-    const identityCenterInstanceArn = props.identityCenterInstanceArn;
+    // Handle Identity Center ARN - use provided ARN or create a custom resource to find it
+    let identityCenterInstanceArn: string
+
+    if (props.identityCenterInstanceArn) {
+      // Use provided organization Identity Center ARN
+      identityCenterInstanceArn = props.identityCenterInstanceArn
+      console.log(`Using provided Identity Center ARN: ${identityCenterInstanceArn}`)
+    } else {
+      // Create a custom resource to dynamically find Identity Center ARN
+      const identityCenterFinder = new lambda.Function(this, "IdentityCenterFinder", {
+        runtime: lambda.Runtime.PYTHON_3_11,
+        handler: "index.handler",
+        code: lambda.Code.fromInline(`
+import boto3
+import json
+import logging
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def handler(event, context):
+    try:
+        request_type = event['RequestType']
+        
+        if request_type == 'Create' or request_type == 'Update':
+            # Try to find Identity Center instance
+            sso_client = boto3.client('sso-admin')
+            
+            try:
+                response = sso_client.list_instances()
+                instances = response.get('Instances', [])
+                
+                if not instances:
+                    return {
+                        'Status': 'FAILED',
+                        'PhysicalResourceId': 'identity-center-finder',
+                        'Reason': 'No IAM Identity Center instance found. Please enable Identity Center or provide the organization Identity Center ARN.'
+                    }
+                
+                instance_arn = instances[0]['InstanceArn']
+                
+                if len(instances) > 1:
+                    logger.warning(f"Multiple Identity Center instances found. Using: {instance_arn}")
+                
+                return {
+                    'Status': 'SUCCESS',
+                    'PhysicalResourceId': 'identity-center-finder',
+                    'Data': {
+                        'InstanceArn': instance_arn
+                    }
+                }
+                
+            except Exception as e:
+                logger.error(f"Error finding Identity Center: {str(e)}")
+                return {
+                    'Status': 'FAILED',
+                    'PhysicalResourceId': 'identity-center-finder',
+                    'Reason': f'Failed to find Identity Center: {str(e)}. Please provide the organization Identity Center ARN as a parameter.'
+                }
+        
+        elif request_type == 'Delete':
+            return {
+                'Status': 'SUCCESS',
+                'PhysicalResourceId': event['PhysicalResourceId']
+            }
+            
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        return {
+            'Status': 'FAILED',
+            'PhysicalResourceId': event.get('PhysicalResourceId', 'identity-center-finder'),
+            'Reason': str(e)
+        }
+`),
+        timeout: cdk.Duration.minutes(2),
+        role: new iam.Role(this, "IdentityCenterFinderRole", {
+          assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+          managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole")],
+          inlinePolicies: {
+            SSOAccess: new iam.PolicyDocument({
+              statements: [
+                new iam.PolicyStatement({
+                  effect: iam.Effect.ALLOW,
+                  actions: ["sso:ListInstances", "sso-admin:ListInstances"],
+                  resources: ["*"],
+                }),
+              ],
+            }),
+          },
+        }),
+      })
+
+      // Custom resource to find Identity Center ARN
+      const identityCenterCustomResource = new cdk.CustomResource(this, "IdentityCenterCustomResource", {
+        serviceToken: identityCenterFinder.functionArn,
+      })
+
+      identityCenterInstanceArn = identityCenterCustomResource.getAttString("InstanceArn")
+    }
 
     // S3 Bucket for data sources
     const dataBucket = new s3.Bucket(this, "DataSourceBucket", {
@@ -36,24 +133,19 @@ export class CatholicCharitiesStack extends cdk.Stack {
       versioned: false,
       publicReadAccess: false,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-    });
+    })
 
-    // Deploy URL files to S3
+    // Deploy URL files from the repository to S3
     const urlFilesDeployment = new s3deploy.BucketDeployment(this, "DeployUrlFiles", {
       sources: [s3deploy.Source.asset(path.resolve(__dirname, "..", urlFilesPath))],
       destinationBucket: dataBucket,
       destinationKeyPrefix: "url-sources/",
-      exclude: ["*", "!*.txt"],
-    });
+      exclude: ["*", "!*.txt"], // Only include .txt files
+    })
 
     // IAM Role for Q Business Application
     const qBusinessRole = new iam.Role(this, "QBusinessApplicationRole", {
-      assumedBy: new iam.ServicePrincipal("qbusiness.amazonaws.com", {
-        conditions: {
-          StringEquals: { "aws:SourceAccount": this.account },
-          ArnLike: { "aws:SourceArn": `arn:aws:qbusiness:${this.region}:${this.account}:application/*` },
-        },
-      }),
+      assumedBy: new iam.ServicePrincipal("qbusiness.amazonaws.com"),
       inlinePolicies: {
         QBusinessApplicationPolicy: new iam.PolicyDocument({
           statements: [
@@ -77,18 +169,18 @@ export class CatholicCharitiesStack extends cdk.Stack {
           ],
         }),
       },
-    });
+    })
 
     // Q Business Application
     const qBusinessApp = new qbusiness.CfnApplication(this, "QBusinessApplication", {
       displayName: `${projectName}-app`,
       description: "Catholic Charities AI Assistant Q Business Application",
       roleArn: qBusinessRole.roleArn,
-      identityCenterInstanceArn,
+      identityCenterInstanceArn: identityCenterInstanceArn,
       attachmentsConfiguration: {
         attachmentsControlMode: "ENABLED",
       },
-    });
+    })
 
     // Q Business Index
     const qBusinessIndex = new qbusiness.CfnIndex(this, "QBusinessIndex", {
@@ -99,16 +191,11 @@ export class CatholicCharitiesStack extends cdk.Stack {
       capacityConfiguration: {
         units: 1,
       },
-    });
+    })
 
     // IAM Role for Q Business Data Source
     const dataSourceRole = new iam.Role(this, "QBusinessDataSourceRole", {
-      assumedBy: new iam.ServicePrincipal("qbusiness.amazonaws.com", {
-        conditions: {
-          StringEquals: { "aws:SourceAccount": this.account },
-          ArnLike: { "aws:SourceArn": `arn:aws:qbusiness:${this.region}:${this.account}:application/*` },
-        },
-      }),
+      assumedBy: new iam.ServicePrincipal("qbusiness.amazonaws.com"),
       inlinePolicies: {
         S3Access: new iam.PolicyDocument({
           statements: [
@@ -124,16 +211,14 @@ export class CatholicCharitiesStack extends cdk.Stack {
             new iam.PolicyStatement({
               effect: iam.Effect.ALLOW,
               actions: [
-                "qbusiness:CreateDataSource",
-                "qbusiness:UpdateDataSource",
-                "qbusiness:DeleteDataSource",
-                "qbusiness:StartDataSourceSyncJob",
-                "qbusiness:StopDataSourceSyncJob",
                 "qbusiness:BatchPutDocument",
                 "qbusiness:BatchDeleteDocument",
+                "qbusiness:PutDocument",
+                "qbusiness:DeleteDocument",
+                "qbusiness:UpdateDocument",
               ],
               resources: [
-                `arn:aws:qbusiness:${this.region}:${this.account}:application/${qBusinessApp.attrApplicationId}/*`,
+                `arn:aws:qbusiness:${this.region}:${this.account}:application/${qBusinessApp.attrApplicationId}/index/${qBusinessIndex.attrIndexId}`,
               ],
             }),
             new iam.PolicyStatement({
@@ -144,9 +229,9 @@ export class CatholicCharitiesStack extends cdk.Stack {
           ],
         }),
       },
-    });
+    })
 
-    // Data Source Creator Lambda
+    // Q Business Data Sources - Create one for each URL file
     const dataSourceCreator = new lambda.Function(this, "DataSourceCreator", {
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: "index.handler",
@@ -164,6 +249,7 @@ qbusiness_client = boto3.client('qbusiness')
 def handler(event, context):
     try:
         request_type = event['RequestType']
+        
         if request_type == 'Create' or request_type == 'Update':
             bucket_name = event['ResourceProperties']['BucketName']
             application_id = event['ResourceProperties']['ApplicationId']
@@ -171,7 +257,7 @@ def handler(event, context):
             data_source_role_arn = event['ResourceProperties']['DataSourceRoleArn']
             project_name = event['ResourceProperties']['ProjectName']
             
-            # List .txt files in url-sources/
+            # List all .txt files in the url-sources/ prefix
             response = s3_client.list_objects_v2(
                 Bucket=bucket_name,
                 Prefix='url-sources/',
@@ -179,83 +265,68 @@ def handler(event, context):
             )
             
             data_sources = []
-            if 'Contents' not in response:
-                logger.warning("No .txt files found in url-sources/")
-                return {
-                    'Status': 'SUCCESS',
-                    'PhysicalResourceId': f"{application_id}-data-sources",
-                    'Data': {'DataSources': json.dumps(data_sources)},
-                    'Reason': 'No .txt files found in S3 bucket'
-                }
             
-            for obj in response['Contents']:
-                key = obj['Key']
-                if key.endswith('.txt'):
-                    file_name = key.split('/')[-1]
-                    base_name = file_name.replace('.txt', '')
-                    
-                    # Create S3 data source
-                    data_source_response = qbusiness_client.create_data_source(
-                        applicationId=application_id,
-                        indexId=index_id,
-                        displayName=f"{project_name}-{base_name}",
-                        description=f"S3 data source for {base_name} URLs",
-                        type='S3',
-                        roleArn=data_source_role_arn,
-                        configuration={
-                            'type': 'S3',
-                            'connectionConfiguration': {
-                                'repositoryEndpointMetadata': {
-                                    'bucketName': bucket_name
-                                }
-                            },
-                            'repositoryConfigurations': {
-                                'document': {
-                                    'fieldMappings': [
-                                        {
-                                            'indexFieldName': '_source_uri',
-                                            'indexFieldType': 'STRING',
-                                            'dataSourceFieldName': 'sourceUri'
+            if 'Contents' in response:
+                for obj in response['Contents']:
+                    key = obj['Key']
+                    if key.endswith('.txt'):
+                        file_name = key.split('/')[-1]
+                        base_name = file_name.replace('.txt', '')
+                        
+                        # Read URLs from the file
+                        file_response = s3_client.get_object(Bucket=bucket_name, Key=key)
+                        urls = file_response['Body'].read().decode('utf-8').strip().split('\\n')
+                        urls = [url.strip() for url in urls if url.strip()]
+                        
+                        if urls:
+                            # Create Q Business data source
+                            data_source_response = qbusiness_client.create_data_source(
+                                applicationId=application_id,
+                                indexId=index_id,
+                                displayName=f"{project_name}-{base_name}",
+                                description=f"Web crawler for {base_name} URLs",
+                                type='WEB',
+                                roleArn=data_source_role_arn,
+                                configuration={
+                                    'webCrawlerConfiguration': {
+                                        'urlConfiguration': {
+                                            'seedUrlConfiguration': {
+                                                'seedUrls': urls
+                                            }
                                         },
-                                        {
-                                            'indexFieldName': 'content',
-                                            'indexFieldType': 'STRING',
-                                            'dataSourceFieldName': 'content'
-                                        }
-                                    ]
-                                }
-                            },
-                            'additionalProperties': {
-                                'inclusionPrefixes': [f'url-sources/{file_name}']
-                            }
-                        },
-                        syncSchedule='ON_DEMAND'
-                    )
-                    
-                    # Start sync job
-                    qbusiness_client.start_data_source_sync_job(
-                        applicationId=application_id,
-                        indexId=index_id,
-                        dataSourceId=data_source_response['dataSourceId']
-                    )
-                    
-                    data_sources.append({
-                        'id': data_source_response['dataSourceId'],
-                        'name': base_name,
-                        'file': file_name
-                    })
-                    logger.info(f"Created S3 data source {base_name} for {file_name}")
+                                        'crawlDepth': 2,
+                                        'maxLinksPerPage': 100,
+                                        'maxContentSizePerPageInMegaBytes': 50,
+                                        'inclusionPatterns': ['.*'],
+                                        'exclusionPatterns': []
+                                    }
+                                },
+                                syncSchedule='rate(7 days)'
+                            )
+                            
+                            data_sources.append({
+                                'id': data_source_response['dataSourceId'],
+                                'name': base_name,
+                                'urls': len(urls)
+                            })
+                            
+                            logger.info(f"Created data source {base_name} with {len(urls)} URLs")
             
             return {
                 'Status': 'SUCCESS',
                 'PhysicalResourceId': f"{application_id}-data-sources",
-                'Data': {'DataSources': json.dumps(data_sources)}
+                'Data': {
+                    'DataSources': json.dumps(data_sources)
+                }
             }
+            
         elif request_type == 'Delete':
+            # Clean up data sources if needed
             return {
                 'Status': 'SUCCESS',
                 'PhysicalResourceId': event['PhysicalResourceId']
             }
+            
     except Exception as e:
         logger.error(f"Error: {str(e)}")
         return {
@@ -264,7 +335,7 @@ def handler(event, context):
             'Reason': str(e)
         }
 `),
-      timeout: cdk.Duration.minutes(10),
+      timeout: cdk.Duration.minutes(5),
       role: new iam.Role(this, "DataSourceCreatorRole", {
         assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
         managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole")],
@@ -287,8 +358,6 @@ def handler(event, context):
                   "qbusiness:DeleteDataSource",
                   "qbusiness:UpdateDataSource",
                   "qbusiness:ListDataSources",
-                  "qbusiness:StartDataSourceSyncJob",
-                  "qbusiness:StopDataSourceSyncJob",
                 ],
                 resources: ["*"],
               }),
@@ -296,7 +365,7 @@ def handler(event, context):
           }),
         },
       }),
-    });
+    })
 
     // Custom resource to create data sources
     const dataSourcesCustomResource = new cdk.CustomResource(this, "DataSourcesCustomResource", {
@@ -308,13 +377,12 @@ def handler(event, context):
         DataSourceRoleArn: dataSourceRole.roleArn,
         ProjectName: projectName,
       },
-    });
+    })
 
-    // Explicit dependencies
-    dataSourcesCustomResource.node.addDependency(urlFilesDeployment);
-    dataSourcesCustomResource.node.addDependency(qBusinessApp);
-    dataSourcesCustomResource.node.addDependency(qBusinessIndex);
-    qBusinessIndex.node.addDependency(qBusinessApp);
+    // Ensure the custom resource runs after the URL files are deployed
+    dataSourcesCustomResource.node.addDependency(urlFilesDeployment)
+    dataSourcesCustomResource.node.addDependency(qBusinessApp)
+    dataSourcesCustomResource.node.addDependency(qBusinessIndex)
 
     // Lambda Execution Role
     const lambdaRole = new iam.Role(this, "LambdaExecutionRole", {
@@ -333,13 +401,13 @@ def handler(event, context):
           ],
         }),
       },
-    });
+    })
 
     // Lambda Function
     const chatLambda = new lambda.Function(this, "ChatLambdaFunction", {
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: "lambda_function.lambda_handler",
-      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambda")),
+      code: lambda.Code.fromAsset("lambda"),
       role: lambdaRole,
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
@@ -348,7 +416,7 @@ def handler(event, context):
         DEBUG: "false",
       },
       description: "Catholic Charities Q Business Chat Handler",
-    });
+    })
 
     // API Gateway
     const api = new apigateway.RestApi(this, "ChatAPI", {
@@ -359,19 +427,19 @@ def handler(event, context):
         allowMethods: apigateway.Cors.ALL_METHODS,
         allowHeaders: ["Content-Type", "X-Amz-Date", "Authorization", "X-Api-Key", "X-Amz-Security-Token"],
       },
-    });
+    })
 
     // API Gateway Integration
     const lambdaIntegration = new apigateway.LambdaIntegration(chatLambda, {
       requestTemplates: { "application/json": '{ "statusCode": "200" }' },
-    });
+    })
 
     // API Routes
-    const chatResource = api.root.addResource("chat");
-    chatResource.addMethod("POST", lambdaIntegration);
+    const chatResource = api.root.addResource("chat")
+    chatResource.addMethod("POST", lambdaIntegration)
 
-    const healthResource = api.root.addResource("health");
-    healthResource.addMethod("GET", lambdaIntegration);
+    const healthResource = api.root.addResource("health")
+    healthResource.addMethod("GET", lambdaIntegration)
 
     // Amplify App for Frontend
     const amplifyApp = new amplify.CfnApp(this, "AmplifyApp", {
@@ -411,7 +479,7 @@ applications:
           value: `${api.url}health`,
         },
       ],
-    });
+    })
 
     // Main branch
     const mainBranch = new amplify.CfnBranch(this, "MainBranch", {
@@ -419,18 +487,57 @@ applications:
       branchName: "main",
       enableAutoBuild: true,
       stage: "PRODUCTION",
-    });
+    })
 
     // Outputs
-    new cdk.CfnOutput(this, "QBusinessApplicationId", { value: qBusinessApp.attrApplicationId });
-    new cdk.CfnOutput(this, "QBusinessIndexId", { value: qBusinessIndex.attrIndexId });
-    new cdk.CfnOutput(this, "DataSourceId", { value: dataSourcesCustomResource.getAttString("DataSources") });
-    new cdk.CfnOutput(this, "APIGatewayURL", { value: api.url });
-    new cdk.CfnOutput(this, "ChatEndpoint", { value: `${api.url}chat` });
-    new cdk.CfnOutput(this, "HealthEndpoint", { value: `${api.url}health` });
-    new cdk.CfnOutput(this, "AmplifyAppId", { value: amplifyApp.attrAppId });
-    new cdk.CfnOutput(this, "AmplifyAppURL", { value: `https://${mainBranch.branchName}.${amplifyApp.attrDefaultDomain}` });
-    new cdk.CfnOutput(this, "S3Bucket", { value: dataBucket.bucketName });
-    new cdk.CfnOutput(this, "IdentityCenterInstanceArn", { value: identityCenterInstanceArn });
+    new cdk.CfnOutput(this, "QBusinessApplicationId", {
+      value: qBusinessApp.attrApplicationId,
+      description: "Q Business Application ID",
+    })
+
+    new cdk.CfnOutput(this, "QBusinessIndexId", {
+      value: qBusinessIndex.attrIndexId,
+      description: "Q Business Index ID",
+    })
+
+    new cdk.CfnOutput(this, "DataSourceId", {
+      value: dataSourcesCustomResource.getAttString("DataSources"),
+      description: "Q Business Data Source ID",
+    })
+
+    new cdk.CfnOutput(this, "APIGatewayURL", {
+      value: api.url,
+      description: "API Gateway URL",
+    })
+
+    new cdk.CfnOutput(this, "ChatEndpoint", {
+      value: `${api.url}chat`,
+      description: "Chat API Endpoint",
+    })
+
+    new cdk.CfnOutput(this, "HealthEndpoint", {
+      value: `${api.url}health`,
+      description: "Health Check Endpoint",
+    })
+
+    new cdk.CfnOutput(this, "AmplifyAppId", {
+      value: amplifyApp.attrAppId,
+      description: "Amplify App ID",
+    })
+
+    new cdk.CfnOutput(this, "AmplifyAppURL", {
+      value: `https://${mainBranch.branchName}.${amplifyApp.attrDefaultDomain}`,
+      description: "Amplify App URL",
+    })
+
+    new cdk.CfnOutput(this, "S3BucketName", {
+      value: dataBucket.bucketName,
+      description: "S3 Data Source Bucket Name",
+    })
+
+    new cdk.CfnOutput(this, "IdentityCenterInstanceArn", {
+      value: identityCenterInstanceArn,
+      description: "Identity Center Instance ARN used",
+    })
   }
 }
