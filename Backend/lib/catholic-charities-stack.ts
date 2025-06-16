@@ -126,7 +126,7 @@ def handler(event, context):
 
     // S3 Bucket for data sources
     const dataBucket = new s3.Bucket(this, "DataSourceBucket", {
-      bucketName: `${projectName}-data-sources}`,
+      bucketName: `${projectName}-data-sources`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
       versioned: false,
