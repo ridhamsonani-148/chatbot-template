@@ -315,7 +315,6 @@ def handler(event, context):
     // API Routes
     const chatResource = api.root.addResource("chat")
     chatResource.addMethod("POST", lambdaIntegration)
-    chatResource.addMethod("OPTIONS", lambdaIntegration)
 
     const healthResource = api.root.addResource("health")
     healthResource.addMethod("GET", lambdaIntegration)
