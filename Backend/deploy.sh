@@ -152,7 +152,7 @@ ARTIFACTS='{"type":"NO_ARTIFACTS"}'
 SOURCE='{
   "type":"GITHUB",
   "location":"'"$GITHUB_URL"'",
-  "buildspec":"buildspec.yml"
+  "buildspec":"Backend/buildspec.yml"
 }'
 
 # Delete existing project if it exists
