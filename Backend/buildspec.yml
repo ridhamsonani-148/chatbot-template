@@ -41,7 +41,7 @@ phases:
       - |
         if [ "$ACTION" = "destroy" ]; then
           echo "Destroying CDK stack...";
-          cdk destroy CatholicCharitiesStack1 --force \
+          cdk destroy CatholicCharitiesStack4 --force \
             --context githubOwner="$GITHUB_OWNER" \
             --context githubRepo="$GITHUB_REPO" \
             --context githubToken="$GITHUB_TOKEN" \

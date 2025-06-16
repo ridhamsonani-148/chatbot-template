@@ -17,7 +17,7 @@ export interface CatholicCharitiesStackProps extends cdk.StackProps {
   readonly identityCenterInstanceArn?: string // Optional: Organization's Identity Center ARN
 }
 
-export class CatholicCharitiesStack3 extends cdk.Stack {
+export class CatholicCharitiesStack4 extends cdk.Stack {
   constructor(scope: Construct, id: string, props: CatholicCharitiesStackProps) {
     super(scope, id, props)
 
@@ -126,7 +126,7 @@ def handler(event, context):
 
     // S3 Bucket for data sources
     const dataBucket = new s3.Bucket(this, "DataSourceBucket", {
-      bucketName: `${projectName}-data-sources`,
+      bucketName: `${projectName}-data-sources3`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
       versioned: false,
@@ -295,26 +295,33 @@ def handler(event, context):
                             logger.info(f"Found {len(urls)} URLs in {file_name}: {urls}")
                             
                             if urls:
-                                # Create Q Business data source
+                                # Create Q Business data source with correct API structure
                                 data_source_response = qbusiness_client.create_data_source(
                                     applicationId=application_id,
                                     indexId=index_id,
                                     displayName=f"{project_name}-{base_name}",
                                     description=f"Web crawler for {base_name} URLs",
-                                    type='WEB',
                                     roleArn=data_source_role_arn,
                                     configuration={
-                                        'webCrawlerConfiguration': {
-                                            'urlConfiguration': {
-                                                'seedUrlConfiguration': {
-                                                    'seedUrls': urls
-                                                }
-                                            },
-                                            'crawlDepth': 2,
-                                            'maxLinksPerPage': 100,
-                                            'maxContentSizePerPageInMegaBytes': 50,
-                                            'inclusionPatterns': ['.*'],
-                                            'exclusionPatterns': []
+                                        'type': 'WEBCRAWLER',
+                                        'connectionConfiguration': {
+                                            'repositoryEndpointMetadata': {
+                                                'BucketName': bucket_name
+                                            }
+                                        },
+                                        'repositoryConfigurations': {
+                                            'webCrawlerConfiguration': {
+                                                'urlConfiguration': {
+                                                    'seedUrlConfiguration': {
+                                                        'seedUrls': urls
+                                                    }
+                                                },
+                                                'crawlDepth': 2,
+                                                'maxLinksPerPage': 100,
+                                                'maxContentSizePerPageInMegaBytes': 50,
+                                                'inclusionPatterns': ['.*'],
+                                                'exclusionPatterns': []
+                                            }
                                         }
                                     },
                                     syncSchedule='rate(7 days)'
@@ -551,7 +558,7 @@ applications:
     })
 
     new cdk.CfnOutput(this, "AmplifyAppURL", {
-      value: `https://${mainBranch.branchName}.${amplifyApp.attrDefaultDomain}`,
+      value: `https://${mainBranch.branchName}.${mainBranch.attrBranchName}.${amplifyApp.attrDefaultDomain}`,
       description: "Amplify App URL",
     })
 
