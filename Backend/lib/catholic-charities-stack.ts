@@ -7,7 +7,9 @@ import * as amplify from "aws-cdk-lib/aws-amplify";
 import * as qbusiness from "aws-cdk-lib/aws-qbusiness";
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
 import type { Construct } from "constructs";
-import { SSOAdminClient, ListInstancesCommand } from "@aws-sdk/client-sso-admin";
+import { CustomResource, Duration } from "aws-cdk-lib";
+import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
+import { Provider } from "aws-cdk-lib/custom-resources";
 
 export interface CatholicCharitiesStackProps extends cdk.StackProps {
   readonly githubOwner: string;
@@ -22,27 +24,44 @@ export class CatholicCharitiesStack extends cdk.Stack {
     super(scope, id, props);
 
     const projectName = props.projectName || "catholic-charities-chatbot";
-    const urlFilesPath = props.urlFilesPath || "data-sources"; // Default path for URL files
+    const urlFilesPath = props.urlFilesPath || "data-sources";
 
-    // Dynamically retrieve IAM Identity Center ARN
-    let identityCenterInstanceArn: string;
-    const ssoClient = new SSOAdminClient({ region: this.region });
-    try {
-      // Run the command synchronously using async/await
-      const response = ssoClient.send(new ListInstancesCommand({}));
-      const resolvedResponse = response as any; // Temporary type assertion to bypass TS issue
-      const instances = resolvedResponse.Instances || [];
-      if (instances.length === 0) {
-        throw new Error("No IAM Identity Center instance found. Enable IAM Identity Center in the AWS Console.");
-      }
-      identityCenterInstanceArn = instances[0].InstanceArn!;
-      if (instances.length > 1) {
-        console.warn(`Multiple IAM Identity Center instances found. Using: ${identityCenterInstanceArn}`);
-      }
-    } catch (error: any) { // Explicitly type error as any
-      throw new Error(
-        `Failed to retrieve IAM Identity Center ARN: ${(error as Error).message}. Ensure IAM Identity Center is enabled and the CDK execution role has 'sso:ListInstances' permission.`
-      );
+    // Lambda to retrieve IAM Identity Center ARN
+    const ssoArnRetriever = new NodejsFunction(this, "SSOArnRetriever", {
+      entry: require.resolve("./sso-arn-retriever.handler.ts"),
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      handler: "handler",
+      bundling: {
+        externalModules: ["@aws-sdk/client-sso-admin"],
+      },
+    });
+
+    // Grant sso:ListInstances permission
+    ssoArnRetriever.role?.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["sso:ListInstances"],
+        resources: ["*"],
+      })
+    );
+
+    // Custom resource provider
+    const ssoArnProvider = new Provider(this, "SSOArnProvider", {
+      onEventHandler: ssoArnRetriever,
+    });
+
+    // Custom resource to get ARN
+    const ssoArnResource = new CustomResource(this, "SSOArnResource", {
+      serviceToken: ssoArnProvider.serviceToken,
+      properties: {
+        Region: this.region,
+      },
+    });
+
+    const identityCenterInstanceArn = ssoArnResource.getAttString("InstanceArn");
+    if (!identityCenterInstanceArn) {
+      throw new Error("Failed to retrieve IAM Identity Center ARN. Ensure organization instance is enabled and role has 'sso:ListInstances' permission.");
     }
 
     // S3 Bucket for data sources
@@ -60,7 +79,7 @@ export class CatholicCharitiesStack extends cdk.Stack {
       sources: [s3deploy.Source.asset(urlFilesPath)],
       destinationBucket: dataBucket,
       destinationKeyPrefix: "url-sources/",
-      exclude: ["*", "!*.txt"], // Only include .txt files
+      exclude: ["*", "!*.txt"],
     });
 
     // IAM Role for Q Business Application
@@ -128,7 +147,7 @@ export class CatholicCharitiesStack extends cdk.Stack {
       displayName: `${projectName}-app`,
       description: "Catholic Charities AI Assistant Q Business Application",
       roleArn: qBusinessRole.roleArn,
-      identityCenterInstanceArn, // Dynamic ARN
+      identityCenterInstanceArn,
       attachmentsConfiguration: {
         attachmentsControlMode: "ENABLED",
       },
