@@ -58,7 +58,7 @@ phases:
             --context githubToken="$GITHUB_TOKEN" \
             --context projectName="$PROJECT_NAME" \
             --context urlFilesPath="$URL_FILES_PATH" \
-            --context identityCenterInstanceArn=$IDENTITY_CENTER_INSTANCE_ARN;
+            --context identityCenterInstanceArn=$IDENTITY_CENTER_INSTANCE_ARN \
             --outputs-file outputs.json;
           
           echo "Deployment outputs:";
