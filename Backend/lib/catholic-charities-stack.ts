@@ -43,10 +43,19 @@ export class CatholicCharitiesStack extends cdk.Stack {
     })
 
     // IAM Role for Q Business Application
+    // IAM Role for Q Business Application
     const qBusinessRole = new iam.Role(this, "QBusinessApplicationRole", {
       assumedBy: new iam.ServicePrincipal("qbusiness.amazonaws.com"),
-      managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("QBusinessServiceRolePolicy")],
       inlinePolicies: {
+        QBusinessPermissions: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: ["qbusiness:*"],
+              resources: ["*"],
+            }),
+          ],
+        }),
         S3Access: new iam.PolicyDocument({
           statements: [
             new iam.PolicyStatement({
@@ -57,7 +66,7 @@ export class CatholicCharitiesStack extends cdk.Stack {
           ],
         }),
       },
-    })
+    });
 
     // Q Business Application
     const qBusinessApp = new qbusiness.CfnApplication(this, "QBusinessApplication", {
