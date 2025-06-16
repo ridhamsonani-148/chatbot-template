@@ -27,6 +27,6 @@
     "isolatedModules": true,
     "noEmit": false
   },
-  "include": ["bin/**/*", "lib/**/*"],
+  "include": ["../bin/**/*", "lib/**/*"],
   "exclude": ["node_modules", "cdk.out"]
 }

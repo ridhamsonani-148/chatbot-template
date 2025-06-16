@@ -1,196 +1,213 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "🚀 Catholic Charities AI Assistant - Complete Deployment"
-echo "========================================================"
-echo ""
+# Prompt for GitHub URL
+if [ -z "${GITHUB_URL:-}" ]; then
+  read -rp "Enter source GitHub repository URL (e.g., https://github.com/OWNER/REPO): " GITHUB_URL
+fi
 
-# Function to prompt for input with default
-prompt_with_default() {
-    local prompt="$1"
-    local default="$2"
-    local var_name="$3"
-    
-    if [ -z "${!var_name:-}" ]; then
-        if [ -n "$default" ]; then
-            read -rp "$prompt [$default]: " input
-            eval "$var_name=\${input:-$default}"
-        else
-            read -rp "$prompt: " input
-            eval "$var_name=\$input"
-        fi
-    fi
-}
+# Normalize URL
+clean_url=${GITHUB_URL%.git}
+clean_url=${clean_url%/}
 
-# Prompt for GitHub repository information
-prompt_with_default "Enter GitHub repository URL" "" "GITHUB_URL"
-
-# Parse GitHub URL
-if [[ $GITHUB_URL =~ ^https://github\.com/([^/]+)/([^/]+)(\.git)?/?$ ]]; then
-    GITHUB_OWNER="${BASH_REMATCH[1]}"
-    GITHUB_REPO_NAME="${BASH_REMATCH[2]}"
-    echo "✓ Detected: $GITHUB_OWNER/$GITHUB_REPO_NAME"
+# Extract owner/repo
+if [[ $clean_url =~ ^https://github\.com/([^/]+/[^/]+)$ ]]; then
+  path="${BASH_REMATCH[1]}"
+elif [[ $clean_url =~ ^git@github\.com:([^/]+/[^/]+)$ ]]; then
+  path="${BASH_REMATCH[1]}"
 else
-    prompt_with_default "Enter GitHub owner" "" "GITHUB_OWNER"
-    prompt_with_default "Enter GitHub repository name" "" "GITHUB_REPO_NAME"
+  echo "Unable to parse owner/repo from '$GITHUB_URL'"
+  read -rp "Enter GitHub owner: " GITHUB_OWNER
+  read -rp "Enter GitHub repo: " GITHUB_REPO
+fi
+
+if [ -z "${GITHUB_OWNER:-}" ] || [ -z "${GITHUB_REPO:-}" ]; then
+  GITHUB_OWNER=${path%%/*}
+  GITHUB_REPO=${path##*/}
+  echo "Detected GitHub Owner: $GITHUB_OWNER"
+  echo "Detected GitHub Repo: $GITHUB_REPO"
+  read -rp "Is this correct? (y/n): " CONFIRM
+  CONFIRM=$(printf '%s' "$CONFIRM" | tr '[:upper:]' '[:lower:]')
+  if [[ "$CONFIRM" != "y" && "$CONFIRM" != "yes" ]]; then
+    read -rp "Enter GitHub owner: " GITHUB_OWNER
+    read -rp "Enter GitHub repo: " GITHUB_REPO
+  fi
+fi
+
+# Prompt for GitHub token
+if [ -z "${GITHUB_TOKEN:-}" ]; then
+  read -rp "Enter GitHub token: " GITHUB_TOKEN
 fi
 
 # Prompt for other parameters
-prompt_with_default "Enter GitHub token" "" "GITHUB_TOKEN"
-prompt_with_default "Enter GitHub branch" "main" "GITHUB_BRANCH"
-prompt_with_default "Enter CodeBuild project name" "CatholicCharitiesDeploy" "PROJECT_NAME"
-prompt_with_default "Enter action (deploy/destroy)" "deploy" "ACTION"
-
-# Validate action
-ACTION=$(echo "$ACTION" | tr '[:upper:]' '[:lower:]')
-if [[ "$ACTION" != "deploy" && "$ACTION" != "destroy" ]]; then
-    echo "❌ Invalid action: '$ACTION'. Choose 'deploy' or 'destroy'."
-    exit 1
+if [ -z "${PROJECT_NAME:-}" ]; then
+  read -rp "Enter project name [default: catholic-charities-chatbot]: " PROJECT_NAME
+  PROJECT_NAME=${PROJECT_NAME:-catholic-charities-chatbot}
 fi
 
-# Validate GitHub access
-echo ""
-echo "🔍 Validating GitHub access..."
-repo_check=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO_NAME")
-if echo "$repo_check" | grep -q "Not Found"; then
-    echo "❌ Repository $GITHUB_OWNER/$GITHUB_REPO_NAME not found or token invalid."
-    exit 1
+# Prompt for URL files path
+if [ -z "${URL_FILES_PATH:-}" ]; then
+  read -rp "Enter path to URL files in repository [default: data-sources]: " URL_FILES_PATH
+  URL_FILES_PATH=${URL_FILES_PATH:-data-sources}
 fi
-echo "✅ GitHub repository access confirmed"
 
-# Check for data_source folder
-echo "🔍 Checking for data_source folder..."
-data_source_check=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO_NAME/contents/data_source")
-if echo "$data_source_check" | grep -q "Not Found"; then
-    echo "⚠️  Warning: data_source folder not found in repository"
-    echo "   The system will still work with web crawler data only"
+# Validate that URL files exist
+if [ ! -d "$URL_FILES_PATH" ]; then
+  echo "Error: URL files directory '$URL_FILES_PATH' not found."
+  echo "Please create the directory and add .txt files with URLs."
+  exit 1
+fi
+
+# Check for .txt files
+txt_files=$(find "$URL_FILES_PATH" -name "*.txt" 2>/dev/null | wc -l)
+if [ "$txt_files" -eq 0 ]; then
+  echo "Warning: No .txt files found in '$URL_FILES_PATH'."
+  echo "Please add .txt files with URLs (one URL per line)."
+  read -rp "Continue anyway? (y/n): " CONTINUE
+  CONTINUE=$(printf '%s' "$CONTINUE" | tr '[:upper:]' '[:lower:]')
+  if [[ "$CONTINUE" != "y" && "$CONTINUE" != "yes" ]]; then
+    exit 1
+  fi
 else
-    echo "✅ data_source folder found"
+  echo "Found $txt_files URL file(s) in '$URL_FILES_PATH':"
+  find "$URL_FILES_PATH" -name "*.txt" -exec basename {} \;
 fi
 
-# Check for Backend/lambda folder
-echo "🔍 Checking for Backend/lambda folder..."
-lambda_check=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO_NAME/contents/Backend/lambda")
-if echo "$lambda_check" | grep -q "Not Found"; then
-    echo "❌ Backend/lambda folder not found in repository"
-    echo "   Please ensure your lambda_function.py is in Backend/lambda/"
-    exit 1
+if [ -z "${DATA_SOURCE_URLS:-}" ]; then
+  echo "Enter data source URLs (comma-separated):"
+  echo "Default: https://www.catholiccharitiesusa.org/,https://www.catholiccharitiesusa.org/our-ministry/,https://www.catholiccharitiesusa.org/find-help/,https://www.catholiccharitiesusa.org/ways-to-give/"
+  read -rp "URLs [press Enter for default]: " DATA_SOURCE_URLS
+  DATA_SOURCE_URLS=${DATA_SOURCE_URLS:-"https://www.catholiccharitiesusa.org/,https://www.catholiccharitiesusa.org/our-ministry/,https://www.catholiccharitiesusa.org/find-help/,https://www.catholiccharitiesusa.org/ways-to-give/"}
 fi
-echo "✅ Backend/lambda folder found"
 
-# Create IAM role for CodeBuild
-ROLE_NAME="${PROJECT_NAME}-service-role"
-echo ""
-echo "🔧 Setting up IAM role: $ROLE_NAME"
+if [ -z "${ACTION:-}" ]; then
+  read -rp "Enter action [deploy/destroy]: " ACTION
+  ACTION=$(printf '%s' "$ACTION" | tr '[:upper:]' '[:lower:]')
+fi
+
+if [[ "$ACTION" != "deploy" && "$ACTION" != "destroy" ]]; then
+  echo "Invalid action: '$ACTION'. Choose 'deploy' or 'destroy'."
+  exit 1
+fi
+
+# Validate GitHub token and repository
+echo "Validating GitHub token and repository..."
+repo_check=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO")
+if echo "$repo_check" | grep -q "Not Found"; then
+  echo "Error: Repository $GITHUB_OWNER/$GITHUB_REPO not found or token invalid."
+  exit 1
+fi
+
+# Create IAM role
+ROLE_NAME="${PROJECT_NAME}-codebuild-service-role"
+echo "Checking for IAM role: $ROLE_NAME"
 
 if aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
-    echo "✓ IAM role exists"
-    ROLE_ARN=$(aws iam get-role --role-name "$ROLE_NAME" --query 'Role.Arn' --output text)
+  echo "✓ IAM role exists"
+  ROLE_ARN=$(aws iam get-role --role-name "$ROLE_NAME" --query 'Role.Arn' --output text)
 else
-    echo "✱ Creating IAM role..."
-    TRUST_DOC='{
-        "Version":"2012-10-17",
-        "Statement":[{
-            "Effect":"Allow",
-            "Principal":{"Service":"codebuild.amazonaws.com"},
-            "Action":"sts:AssumeRole"
-        }]
-    }'
+  echo "✱ Creating IAM role: $ROLE_NAME"
+  TRUST_DOC='{
+    "Version":"2012-10-17",
+    "Statement":[{
+      "Effect":"Allow",
+      "Principal":{"Service":"codebuild.amazonaws.com"},
+      "Action":"sts:AssumeRole"
+    }]
+  }'
 
-    ROLE_ARN=$(aws iam create-role \
-        --role-name "$ROLE_NAME" \
-        --assume-role-policy-document "$TRUST_DOC" \
-        --query 'Role.Arn' --output text)
+  ROLE_ARN=$(aws iam create-role \
+    --role-name "$ROLE_NAME" \
+    --assume-role-policy-document "$TRUST_DOC" \
+    --query 'Role.Arn' --output text)
 
-    echo "✱ Attaching policies..."
-    aws iam attach-role-policy \
-        --role-name "$ROLE_NAME" \
-        --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+  echo "Attaching policies..."
+  aws iam attach-role-policy \
+    --role-name "$ROLE_NAME" \
+    --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
 
-    echo "⏳ Waiting for IAM role to propagate..."
-    sleep 15
+  echo "Waiting for IAM role to propagate..."
+  sleep 10
 fi
 
-# Create or update CodeBuild project
-echo ""
-echo "🏗️  Setting up CodeBuild project: $PROJECT_NAME"
+# Create CodeBuild project
+CODEBUILD_PROJECT_NAME="${PROJECT_NAME}-deploy"
+echo "Creating CodeBuild project: $CODEBUILD_PROJECT_NAME"
 
 ENVIRONMENT='{
-    "type": "LINUX_CONTAINER",
-    "image": "aws/codebuild/standard:7.0",
-    "computeType": "BUILD_GENERAL1_MEDIUM",
-    "environmentVariables": [
-        {"name": "GITHUB_TOKEN", "value": "'"$GITHUB_TOKEN"'", "type": "PLAINTEXT"},
-        {"name": "GITHUB_OWNER", "value": "'"$GITHUB_OWNER"'", "type": "PLAINTEXT"},
-        {"name": "GITHUB_REPO_NAME", "value": "'"$GITHUB_REPO_NAME"'", "type": "PLAINTEXT"},
-        {"name": "GITHUB_BRANCH", "value": "'"$GITHUB_BRANCH"'", "type": "PLAINTEXT"},
-        {"name": "ACTION", "value": "'"$ACTION"'", "type": "PLAINTEXT"}
-    ]
+  "type": "LINUX_CONTAINER",
+  "image": "aws/codebuild/standard:7.0",
+  "computeType": "BUILD_GENERAL1_MEDIUM",
+  "environmentVariables": [
+    {"name": "GITHUB_OWNER", "value": "'"$GITHUB_OWNER"'", "type": "PLAINTEXT"},
+    {"name": "GITHUB_REPO", "value": "'"$GITHUB_REPO"'", "type": "PLAINTEXT"},
+    {"name": "GITHUB_TOKEN", "value": "'"$GITHUB_TOKEN"'", "type": "PLAINTEXT"},
+    {"name": "PROJECT_NAME", "value": "'"$PROJECT_NAME"'", "type": "PLAINTEXT"},
+    {"name": "URL_FILES_PATH", "value": "'"$URL_FILES_PATH"'", "type": "PLAINTEXT"},
+    {"name": "ACTION", "value": "'"$ACTION"'", "type": "PLAINTEXT"}
+  ]
 }'
 
 ARTIFACTS='{"type":"NO_ARTIFACTS"}'
 SOURCE='{
-    "type":"GITHUB",
-    "location":"'"$GITHUB_URL"'",
-    "buildspec":"Backend/buildspec.yml"
+  "type":"GITHUB",
+  "location":"'"$GITHUB_URL"'",
+  "buildspec":"buildspec.yml"
 }'
 
-# Try to create project, update if it exists
-if aws codebuild create-project \
-    --name "$PROJECT_NAME" \
-    --source "$SOURCE" \
-    --artifacts "$ARTIFACTS" \
-    --environment "$ENVIRONMENT" \
-    --service-role "$ROLE_ARN" \
-    --output json \
-    --no-cli-pager >/dev/null 2>&1; then
-    echo "✅ CodeBuild project created"
-else
-    echo "✱ Updating existing CodeBuild project..."
-    aws codebuild update-project \
-        --name "$PROJECT_NAME" \
-        --source "$SOURCE" \
-        --artifacts "$ARTIFACTS" \
-        --environment "$ENVIRONMENT" \
-        --service-role "$ROLE_ARN" \
-        --output json \
-        --no-cli-pager >/dev/null
-    echo "✅ CodeBuild project updated"
+# Delete existing project if it exists
+if aws codebuild batch-get-projects --names "$CODEBUILD_PROJECT_NAME" --query 'projects[0].name' --output text 2>/dev/null | grep -q "$CODEBUILD_PROJECT_NAME"; then
+  echo "Deleting existing CodeBuild project..."
+  aws codebuild delete-project --name "$CODEBUILD_PROJECT_NAME"
+  sleep 5
 fi
 
-# Start the build
-echo ""
-echo "🚀 Starting deployment..."
-BUILD_ID=$(aws codebuild start-build \
-    --project-name "$PROJECT_NAME" \
-    --query 'build.id' \
-    --output text \
-    --no-cli-pager)
+aws codebuild create-project \
+  --name "$CODEBUILD_PROJECT_NAME" \
+  --source "$SOURCE" \
+  --artifacts "$ARTIFACTS" \
+  --environment "$ENVIRONMENT" \
+  --service-role "$ROLE_ARN" \
+  --output json \
+  --no-cli-pager
 
 if [ $? -eq 0 ]; then
-    echo "✅ Build started successfully!"
-    echo "📋 Build ID: $BUILD_ID"
-    echo ""
-    echo "🎯 What's happening now:"
-    echo "========================"
-    echo ""
-    echo "📁 Step 1: Downloading files from data_source folder to S3"
-    echo "🤖 Step 2: Creating Q Business application with anonymous access"
-    echo "🕷️  Step 3: Setting up web crawler for Catholic Charities websites"
-    echo "⚡ Step 4: Deploying Lambda function from Backend/lambda/"
-    echo "🌐 Step 5: Creating API Gateway with CORS configuration"
-    echo "📱 Step 6: Setting up Amplify app with automatic API integration"
-    echo ""
-    echo "🔗 Monitor progress:"
-    echo "  • CodeBuild: https://console.aws.amazon.com/codesuite/codebuild/projects/$PROJECT_NAME/build/$BUILD_ID"
-    echo "  • CloudFormation: https://console.aws.amazon.com/cloudformation"
-    echo ""
-    echo "⏱️  Expected completion: 15-20 minutes"
-    echo ""
-    echo "💡 Tip: The build will output all URLs when complete!"
+  echo "✓ CodeBuild project '$CODEBUILD_PROJECT_NAME' created."
 else
-    echo "❌ Failed to start build"
-    exit 1
+  echo "✗ Failed to create CodeBuild project."
+  exit 1
 fi
+
+# Start build
+echo "Starting build for '$CODEBUILD_PROJECT_NAME'..."
+BUILD_ID=$(aws codebuild start-build \
+  --project-name "$CODEBUILD_PROJECT_NAME" \
+  --query 'build.id' \
+  --output text)
+
+if [ $? -eq 0 ]; then
+  echo "✓ Build started with ID: $BUILD_ID"
+  echo "You can monitor the build progress in the AWS Console:"
+  echo "https://console.aws.amazon.com/codesuite/codebuild/projects/$CODEBUILD_PROJECT_NAME/build/$BUILD_ID"
+else
+  echo "✗ Failed to start build."
+  exit 1
+fi
+
+echo ""
+echo "=== Deployment Information ==="
+echo "Project Name: $PROJECT_NAME"
+echo "GitHub Repo: $GITHUB_OWNER/$GITHUB_REPO"
+echo "URL Files Path: $URL_FILES_PATH"
+echo "URL Files Found: $txt_files"
+echo "Action: $ACTION"
+echo "Build ID: $BUILD_ID"
+echo ""
+echo "The deployment will create:"
+echo "- Q Business Application with web crawler"
+echo "- Lambda function for chat API"
+echo "- API Gateway for REST endpoints"
+echo "- Amplify app for frontend hosting"
+echo "- S3 bucket for data sources"
 
 exit 0

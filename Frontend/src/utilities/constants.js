@@ -21,12 +21,36 @@ export const USERMESSAGE_BACKGROUND = "#E7E3F0" // Light purple for user message
 
 // API endpoints - These are automatically populated by the deployment process
 // The CDK will inject these values as environment variables in Amplify
-export const API_BASE_URL =
-  process.env.REACT_APP_API_BASE_URL || window.ENV?.REACT_APP_API_BASE_URL || "http://localhost:3001"
+const getApiBaseUrl = () => {
+  // In production (Amplify), use environment variables
+  if (process.env.REACT_APP_API_BASE_URL) {
+    return process.env.REACT_APP_API_BASE_URL
+  }
+
+  // Check for runtime environment variables (injected by Amplify)
+  if (typeof window !== "undefined" && window.ENV?.REACT_APP_API_BASE_URL) {
+    return window.ENV.REACT_APP_API_BASE_URL
+  }
+
+  // Development fallback
+  if (process.env.NODE_ENV === "development") {
+    return "http://localhost:3001"
+  }
+
+  // Production fallback - this should not happen in normal deployment
+  console.warn("⚠️ API Base URL not configured. Using localhost fallback.")
+  return "http://localhost:3001"
+}
+
+export const API_BASE_URL = getApiBaseUrl()
 export const CHAT_ENDPOINT =
-  process.env.REACT_APP_CHAT_ENDPOINT || window.ENV?.REACT_APP_CHAT_ENDPOINT || `${API_BASE_URL}/chat`
+  process.env.REACT_APP_CHAT_ENDPOINT ||
+  (typeof window !== "undefined" && window.ENV?.REACT_APP_CHAT_ENDPOINT) ||
+  `${API_BASE_URL}/chat`
 export const HEALTH_ENDPOINT =
-  process.env.REACT_APP_HEALTH_ENDPOINT || window.ENV?.REACT_APP_HEALTH_ENDPOINT || `${API_BASE_URL}/health`
+  process.env.REACT_APP_HEALTH_ENDPOINT ||
+  (typeof window !== "undefined" && window.ENV?.REACT_APP_HEALTH_ENDPOINT) ||
+  `${API_BASE_URL}/health`
 
 // Features
 export const ALLOW_FILE_UPLOAD = false

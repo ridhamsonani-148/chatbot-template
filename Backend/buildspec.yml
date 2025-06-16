@@ -3,21 +3,20 @@ version: 0.2
 phases:
   install:
     runtime-versions:
-      nodejs: 18
+      nodejs: 20
       python: 3.11
     commands:
       - echo "Installing AWS CDK CLI..."
-      - npm install -g aws-cdk@2.100.0
-      - echo "Changing to Backend/cdk directory"
-      - cd Backend/cdk
-      - echo "Installing CDK dependencies..."
-      - npm ci
+      - npm install -g aws-cdk@2.161.1
+      - cd Backend
+      - echo "Installing dependencies..."
+      - npm install
 
   pre_build:
     commands:
       - echo "Building TypeScript sources..."
       - npm run build
-      - echo "Bootstrapping CDK (if needed)..."
+      - echo "Bootstrapping CDK..."
       - cdk bootstrap --require-approval never
 
   build:
@@ -26,43 +25,47 @@ phases:
         if [ "$ACTION" = "destroy" ]; then
           echo "Destroying CDK stack...";
           cdk destroy CatholicCharitiesStack --force \
-            --parameters GitHubToken="$GITHUB_TOKEN" \
-            --parameters GitHubOwner="$GITHUB_OWNER" \
-            --parameters GitHubRepo="$GITHUB_REPO_NAME" \
-            --parameters AmplifyGithubBranch="$GITHUB_BRANCH";
+            --context githubOwner="$GITHUB_OWNER" \
+            --context githubRepo="$GITHUB_REPO" \
+            --context githubToken="$GITHUB_TOKEN" \
+            --context projectName="$PROJECT_NAME" \
+            --context urlFilesPath="$URL_FILES_PATH";
         else
           echo "Deploying CDK stack...";
+          echo "URL files found in $URL_FILES_PATH:";
+          ls -la "$URL_FILES_PATH"/*.txt || echo "No .txt files found in $URL_FILES_PATH";
+          
           cdk deploy CatholicCharitiesStack --require-approval never \
-            --parameters GitHubToken="$GITHUB_TOKEN" \
-            --parameters GitHubOwner="$GITHUB_OWNER" \
-            --parameters GitHubRepo="$GITHUB_REPO_NAME" \
-            --parameters AmplifyGithubBranch="$GITHUB_BRANCH";
+            --context githubOwner="$GITHUB_OWNER" \
+            --context githubRepo="$GITHUB_REPO" \
+            --context githubToken="$GITHUB_TOKEN" \
+            --context projectName="$PROJECT_NAME" \
+            --context urlFilesPath="$URL_FILES_PATH" \
+            --outputs-file outputs.json;
+          
+          echo "Deployment outputs:";
+          cat outputs.json;
         fi
 
   post_build:
     commands:
       - echo "CDK $ACTION complete."
       - |
-        if [ "$ACTION" != "destroy" ]; then
-          echo "Getting stack outputs...";
-          aws cloudformation describe-stacks --stack-name CatholicCharitiesStack --query 'Stacks[0].Outputs' --output table;
+        if [ "$ACTION" = "deploy" ]; then
+          echo "=== Deployment Summary ===";
+          echo "✅ Q Business Application deployed";
+          echo "✅ Lambda function deployed";
+          echo "✅ API Gateway deployed";
+          echo "✅ Amplify app configured";
+          echo "✅ S3 data source bucket created";
           echo "";
-          echo "🎉 Deployment Complete!";
-          echo "======================";
-          echo "";
-          echo "📋 Your Catholic Charities AI Assistant is ready:";
-          echo "";
-          API_URL=$(aws cloudformation describe-stacks --stack-name CatholicCharitiesStack --query 'Stacks[0].Outputs[?OutputKey==`ApiGatewayUrl`].OutputValue' --output text);
-          AMPLIFY_URL=$(aws cloudformation describe-stacks --stack-name CatholicCharitiesStack --query 'Stacks[0].Outputs[?OutputKey==`AmplifyAppUrl`].OutputValue' --output text);
-          QBUSINESS_ID=$(aws cloudformation describe-stacks --stack-name CatholicCharitiesStack --query 'Stacks[0].Outputs[?OutputKey==`QBusinessApplicationId`].OutputValue' --output text);
-          echo "🌐 Frontend URL: $AMPLIFY_URL";
-          echo "🔗 API Gateway: $API_URL";
-          echo "🤖 Q Business App ID: $QBUSINESS_ID";
-          echo "";
-          echo "✅ All components deployed successfully!";
+          echo "Next steps:";
+          echo "1. Wait for Q Business data source sync to complete";
+          echo "2. Test the API endpoints";
+          echo "3. Access your frontend via Amplify URL";
         fi
 
 artifacts:
   files:
     - '**/*'
-  base-directory: 'Backend/cdk/cdk.out'
+  base-directory: 'cdk.out'
