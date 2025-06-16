@@ -22,7 +22,7 @@ phases:
       - ls -la lambda/ || echo "lambda directory not found"
       - ls -la data-sources/ || echo "data-sources directory not found"
       - echo "Installing dependencies..."
-      - npm ci
+      - npm install
 
   pre_build:
     commands:
