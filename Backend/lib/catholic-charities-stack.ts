@@ -17,7 +17,7 @@ export interface CatholicCharitiesStackProps extends cdk.StackProps {
   readonly identityCenterInstanceArn?: string // Optional: Organization's Identity Center ARN
 }
 
-export class CatholicCharitiesStack4 extends cdk.Stack {
+export class CatholicCharitiesStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: CatholicCharitiesStackProps) {
     super(scope, id, props)
 
@@ -126,7 +126,7 @@ def handler(event, context):
 
     // S3 Bucket for data sources
     const dataBucket = new s3.Bucket(this, "DataSourceBucket", {
-      bucketName: `${projectName}-data-sources3`,
+      bucketName: `${projectName}-data-sources-${this.account}-${this.region}`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
       versioned: false,
@@ -140,6 +140,41 @@ def handler(event, context):
       destinationBucket: dataBucket,
       destinationKeyPrefix: "url-sources/",
       include: ["*.txt"], // Use include instead of exclude for clarity
+    })
+
+    // IAM Role for Q Business Data Source
+    const dataSourceRole = new iam.Role(this, "QBusinessDataSourceRole", {
+      assumedBy: new iam.ServicePrincipal("qbusiness.amazonaws.com"),
+      inlinePolicies: {
+        S3Access: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: ["s3:GetObject", "s3:ListBucket"],
+              resources: [dataBucket.bucketArn, `${dataBucket.bucketArn}/*`],
+            }),
+          ],
+        }),
+        QBusinessAccess: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                "qbusiness:CreateDataSource",
+                "qbusiness:DeleteDataSource",
+                "qbusiness:UpdateDataSource",
+                "qbusiness:ListDataSources",
+              ],
+              resources: ["*"],
+            }),
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: ["iam:PassRole"],
+              resources: [dataSourceRole.roleArn],
+            }),
+          ],
+        }),
+      },
     })
 
     // IAM Role for Q Business Application
@@ -192,44 +227,6 @@ def handler(event, context):
       },
     })
 
-    // IAM Role for Q Business Data Source
-    const dataSourceRole = new iam.Role(this, "QBusinessDataSourceRole", {
-      assumedBy: new iam.ServicePrincipal("qbusiness.amazonaws.com"),
-      inlinePolicies: {
-        S3Access: new iam.PolicyDocument({
-          statements: [
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: ["s3:GetObject", "s3:ListBucket"],
-              resources: [dataBucket.bucketArn, `${dataBucket.bucketArn}/*`],
-            }),
-          ],
-        }),
-        QBusinessAccess: new iam.PolicyDocument({
-          statements: [
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: [
-                "qbusiness:BatchPutDocument",
-                "qbusiness:BatchDeleteDocument",
-                "qbusiness:PutDocument",
-                "qbusiness:DeleteDocument",
-                "qbusiness:UpdateDocument",
-              ],
-              resources: [
-                `arn:aws:qbusiness:${this.region}:${this.account}:application/${qBusinessApp.attrApplicationId}/index/${qBusinessIndex.attrIndexId}`,
-              ],
-            }),
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
-              resources: ["*"],
-            }),
-          ],
-        }),
-      },
-    })
-
     // Q Business Data Sources - Create one for each URL file
     const dataSourceCreator = new lambda.Function(this, "DataSourceCreator", {
       runtime: lambda.Runtime.PYTHON_3_11,
@@ -238,12 +235,44 @@ def handler(event, context):
 import json
 import logging
 import time
+import urllib3
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 s3_client = boto3.client('s3')
 qbusiness_client = boto3.client('qbusiness')
+
+def send_response(event, context, response_status, response_data=None, physical_resource_id=None, reason=None):
+    """Send response to CloudFormation"""
+    if response_data is None:
+        response_data = {}
+    
+    response_url = event['ResponseURL']
+    
+    response_body = {
+        'Status': response_status,
+        'Reason': reason or f'See CloudWatch Log Stream: {context.log_stream_name}',
+        'PhysicalResourceId': physical_resource_id or context.log_stream_name,
+        'StackId': event['StackId'],
+        'RequestId': event['RequestId'],
+        'LogicalResourceId': event['LogicalResourceId'],
+        'Data': response_data
+    }
+    
+    json_response_body = json.dumps(response_body)
+    
+    headers = {
+        'content-type': '',
+        'content-length': str(len(json_response_body))
+    }
+    
+    try:
+        http = urllib3.PoolManager()
+        response = http.request('PUT', response_url, body=json_response_body, headers=headers)
+        logger.info(f"CloudFormation response sent successfully: {response.status}")
+    except Exception as e:
+        logger.error(f"Failed to send response to CloudFormation: {str(e)}")
 
 def handler(event, context):
     try:
@@ -273,7 +302,8 @@ def handler(event, context):
                 logger.info(f"S3 list response: {response}")
             except Exception as e:
                 logger.error(f"Failed to list S3 objects: {str(e)}")
-                raise
+                send_response(event, context, 'FAILED', reason=f"Failed to list S3 objects: {str(e)}")
+                return
             
             data_sources = []
             
@@ -303,25 +333,17 @@ def handler(event, context):
                                     description=f"Web crawler for {base_name} URLs",
                                     roleArn=data_source_role_arn,
                                     configuration={
-                                        'type': 'WEBCRAWLER',
-                                        'connectionConfiguration': {
-                                            'repositoryEndpointMetadata': {
-                                                'BucketName': bucket_name
-                                            }
-                                        },
-                                        'repositoryConfigurations': {
-                                            'webCrawlerConfiguration': {
-                                                'urlConfiguration': {
-                                                    'seedUrlConfiguration': {
-                                                        'seedUrls': urls
-                                                    }
-                                                },
-                                                'crawlDepth': 2,
-                                                'maxLinksPerPage': 100,
-                                                'maxContentSizePerPageInMegaBytes': 50,
-                                                'inclusionPatterns': ['.*'],
-                                                'exclusionPatterns': []
-                                            }
+                                        'webCrawlerConfiguration': {
+                                            'urlConfiguration': {
+                                                'seedUrlConfiguration': {
+                                                    'seedUrls': urls
+                                                }
+                                            },
+                                            'crawlDepth': 2,
+                                            'maxLinksPerPage': 100,
+                                            'maxContentSizePerPageInMegaBytes': 50,
+                                            'inclusionPatterns': ['.*'],
+                                            'exclusionPatterns': []
                                         }
                                     },
                                     syncSchedule='rate(7 days)'
@@ -336,36 +358,27 @@ def handler(event, context):
                                 logger.info(f"Created data source {base_name} with ID {data_source_response['dataSourceId']}")
                         except Exception as e:
                             logger.error(f"Failed to process file {key}: {str(e)}")
-                            # Continue with other files
+                            # Continue with other files instead of failing completely
                             continue
             else:
                 logger.warning("No objects found in S3 bucket url-sources/ prefix")
             
             logger.info(f"Created {len(data_sources)} data sources total")
             
-            return {
-                'Status': 'SUCCESS',
-                'PhysicalResourceId': f"{application_id}-data-sources",
-                'Data': {
-                    'DataSources': json.dumps(data_sources),
-                    'DataSourceCount': str(len(data_sources))
-                }
-            }
+            # Send success response to CloudFormation
+            send_response(event, context, 'SUCCESS', {
+                'DataSources': json.dumps(data_sources),
+                'DataSourceCount': str(len(data_sources))
+            }, f"{application_id}-data-sources")
             
         elif request_type == 'Delete':
             # Clean up data sources if needed
-            return {
-                'Status': 'SUCCESS',
-                'PhysicalResourceId': event['PhysicalResourceId']
-            }
+            logger.info("Delete request - cleaning up")
+            send_response(event, context, 'SUCCESS', {}, event.get('PhysicalResourceId', 'deleted'))
             
     except Exception as e:
         logger.error(f"Error: {str(e)}")
-        return {
-            'Status': 'FAILED',
-            'PhysicalResourceId': event.get('PhysicalResourceId', 'failed'),
-            'Reason': str(e)
-        }
+        send_response(event, context, 'FAILED', reason=str(e))
 `),
       timeout: cdk.Duration.minutes(10), // Increase timeout
       role: new iam.Role(this, "DataSourceCreatorRole", {
