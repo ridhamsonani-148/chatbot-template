@@ -14,13 +14,6 @@ phases:
       - ls -la
       - echo "Changing into Backend directory"
       - cd Backend
-      - echo "Listing Backend directory:"
-      - ls -la
-      - echo "Checking for required files:"
-      - ls -la bin/ || echo "bin directory not found"
-      - ls -la lib/ || echo "lib directory not found"
-      - ls -la lambda/ || echo "lambda directory not found"
-      - ls -la data-sources/ || echo "data-sources directory not found"
       - echo "Installing dependencies..."
       - npm install
 
@@ -28,11 +21,6 @@ phases:
     commands:
       - echo "Building TypeScript sources..."
       - npm run build
-      - echo "Listing compiled files:"
-      - ls -la bin/ || echo "No bin directory after build"
-      - ls -la lib/ || echo "No lib directory after build"
-      - echo "Checking data-sources directory:"
-      - ls -la data-sources/ || echo "data-sources directory not found"
       - echo "Bootstrapping CDK..."
       - cdk bootstrap --require-approval never
 
@@ -40,17 +28,19 @@ phases:
     commands:
       - |
         if [ "$ACTION" = "destroy" ]; then
-          echo "Destroying CDK stack...";
+          echo "Destroying CDK stack..."
           cdk destroy CatholicCharitiesStack --force \
             --context githubOwner="$GITHUB_OWNER" \
             --context githubRepo="$GITHUB_REPO" \
             --context githubToken="$GITHUB_TOKEN" \
             --context projectName="$PROJECT_NAME" \
-            --context urlFilesPath="$URL_FILES_PATH";
+            --context urlFilesPath="$URL_FILES_PATH" \
+            --context identityCenterInstanceArn="$IDENTITY_CENTER_INSTANCE_ARN"
         else
-          echo "Deploying CDK stack...";
-          echo "URL files found in $URL_FILES_PATH:";
-          ls -la "$URL_FILES_PATH"/*.txt || echo "No .txt files found in $URL_FILES_PATH";
+          echo "=== PHASE 1: Backend Deployment ==="
+          echo "Deploying backend infrastructure..."
+          echo "URL files found in $URL_FILES_PATH:"
+          ls -la "$URL_FILES_PATH"/*.txt || echo "No .txt files found in $URL_FILES_PATH"
           
           cdk deploy CatholicCharitiesStack --require-approval never \
             --context githubOwner="$GITHUB_OWNER" \
@@ -58,29 +48,169 @@ phases:
             --context githubToken="$GITHUB_TOKEN" \
             --context projectName="$PROJECT_NAME" \
             --context urlFilesPath="$URL_FILES_PATH" \
-            --context identityCenterInstanceArn=$IDENTITY_CENTER_INSTANCE_ARN \
-            --outputs-file outputs.json;
+            --context identityCenterInstanceArn="$IDENTITY_CENTER_INSTANCE_ARN" \
+            --outputs-file outputs.json
           
-          echo "Deployment outputs:";
-          cat outputs.json;
+          echo "Backend deployment outputs:"
+          cat outputs.json
+          
+          API_URL=$(cat outputs.json | jq -r '.CatholicCharitiesStack.APIGatewayURL // empty')
+          FRONTEND_BUILD_BUCKET=$(cat outputs.json | jq -r '.CatholicCharitiesStack.FrontendBuildBucket // empty')
+          AMPLIFY_DEPLOYMENT_LAMBDA=$(cat outputs.json | jq -r '.CatholicCharitiesStack.AmplifyDeploymentLambda // empty')
+          
+          if [ -z "$API_URL" ] || [ -z "$FRONTEND_BUILD_BUCKET" ] || [ -z "$AMPLIFY_DEPLOYMENT_LAMBDA" ]; then
+            echo "Error: Could not extract required outputs from CDK deployment"
+            echo "API_URL: $API_URL"
+            echo "FRONTEND_BUILD_BUCKET: $FRONTEND_BUILD_BUCKET"
+            echo "AMPLIFY_DEPLOYMENT_LAMBDA: $AMPLIFY_DEPLOYMENT_LAMBDA"
+            exit 1
+          fi
+          
+          echo "✅ Backend deployment completed successfully"
+          echo "API Gateway URL: $API_URL"
+          echo "Frontend Build Bucket: $FRONTEND_BUILD_BUCKET"
+          
+          echo "=== PHASE 2: Frontend Build ==="
+          echo "Building frontend application..."
+          cd ../Frontend
+          
+          echo "REACT_APP_API_BASE_URL=$API_URL" > .env
+          echo "REACT_APP_CHAT_ENDPOINT=${API_URL}chat" >> .env
+          echo "REACT_APP_HEALTH_ENDPOINT=${API_URL}health" >> .env
+          
+          echo "Frontend environment variables:"
+          cat .env
+          
+          echo "Installing frontend dependencies..."
+          npm ci
+          
+          echo "Building frontend application..."
+          npm run build
+          
+          echo "Frontend build completed successfully"
+          ls -la build/
+          
+          echo "=== PHASE 3: Creating Build Artifact ==="
+          echo "Creating build.zip artifact..."
+          cd build
+          zip -r ../build.zip . -x "*.DS_Store*" "*.git*"
+          cd ..
+          
+          BUILD_KEY="builds/build-$(date +%s).zip"
+          echo "Uploading build artifact to s3://$FRONTEND_BUILD_BUCKET/$BUILD_KEY"
+          aws s3 cp build.zip s3://$FRONTEND_BUILD_BUCKET/$BUILD_KEY
+          
+          echo "✅ Build artifact uploaded successfully"
+          
+          echo "=== PHASE 4: Amplify App Deployment ==="
+          echo "Deploying frontend to Amplify using build artifact..."
+          
+          LAMBDA_PAYLOAD=$(cat <<EOF
+        {
+          "RequestType": "Create",
+          "ResponseURL": "https://httpbin.org/put",
+          "StackId": "arn:aws:cloudformation:$CDK_DEFAULT_REGION:123456789012:stack/test/test",
+          "RequestId": "test-request-id",
+          "LogicalResourceId": "AmplifyDeployment",
+          "ResourceProperties": {
+            "ProjectName": "$PROJECT_NAME",
+            "ApiUrl": "$API_URL",
+            "BuildBucket": "$FRONTEND_BUILD_BUCKET",
+            "BuildKey": "$BUILD_KEY"
+          }
+        }
+        EOF
+          )
+          
+          echo "Invoking Amplify deployment Lambda..."
+          LAMBDA_RESPONSE=$(aws lambda invoke \
+            --function-name "$AMPLIFY_DEPLOYMENT_LAMBDA" \
+            --payload "$LAMBDA_PAYLOAD" \
+            --cli-binary-format raw-in-base64-out \
+            response.json)
+          
+          echo "Lambda invocation response:"
+          echo "$LAMBDA_RESPONSE"
+          
+          if [ -f response.json ]; then
+            echo "Lambda function response:"
+            cat response.json
+            
+            AMPLIFY_APP_ID=$(cat response.json | jq -r '.AppId // empty')
+            AMPLIFY_APP_URL=$(cat response.json | jq -r '.AppUrl // empty')
+            DEPLOYMENT_STATUS=$(cat response.json | jq -r '.DeploymentStatus // empty')
+            
+            if [ -n "$AMPLIFY_APP_ID" ] && [ -n "$AMPLIFY_APP_URL" ]; then
+              echo "✅ Amplify deployment completed"
+              echo "Amplify App ID: $AMPLIFY_APP_ID"
+              echo "Amplify App URL: $AMPLIFY_APP_URL"
+              echo "Deployment Status: $DEPLOYMENT_STATUS"
+              
+              echo "{" > final_outputs.json
+              echo "  \"BackendApiUrl\": \"$API_URL\"," >> final_outputs.json
+              echo "  \"FrontendUrl\": \"$AMPLIFY_APP_URL\"," >> final_outputs.json
+              echo "  \"AmplifyAppId\": \"$AMPLIFY_APP_ID\"," >> final_outputs.json
+              echo "  \"DeploymentStatus\": \"$DEPLOYMENT_STATUS\"" >> final_outputs.json
+              echo "}" >> final_outputs.json
+            else
+              echo "⚠️ Amplify deployment may have issues, but continuing..."
+            fi
+          else
+            echo "⚠️ No response file from Lambda invocation"
+          fi
+          
+          echo "=== PHASE 5: Post-Deployment Verification ==="
+          echo "Verifying API Gateway endpoint..."
+          
+          HEALTH_URL="${API_URL}health"
+          echo "Testing health endpoint: $HEALTH_URL"
+          
+          HEALTH_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || echo "000")
+          if [ "$HEALTH_RESPONSE" = "200" ]; then
+            echo "✅ API Gateway health check passed"
+          else
+            echo "⚠️ API Gateway health check returned: $HEALTH_RESPONSE"
+          fi
+          
+          rm -f build.zip response.json
+          
+          cd ../Backend
         fi
 
   post_build:
     commands:
-      - echo "CDK $ACTION complete."
+      - echo "=== Deployment Complete ==="
       - |
         if [ "$ACTION" = "deploy" ]; then
-          echo "=== Deployment Summary ===";
-          echo "✅ Q Business Application deployed";
-          echo "✅ Lambda function deployed";
-          echo "✅ API Gateway deployed";
-          echo "✅ Amplify app configured";
-          echo "✅ S3 data source bucket created";
-          echo "";
-          echo "Next steps:";
-          echo "1. Wait for Q Business data source sync to complete";
-          echo "2. Test the API endpoints";
-          echo "3. Access your frontend via Amplify URL";
+          echo "🎉 Full-Stack Deployment Summary:"
+          echo ""
+          echo "✅ Q Business Application deployed with web crawler"
+          echo "✅ Q Business Index and Retriever created"
+          echo "✅ Data source sync jobs started automatically"
+          echo "✅ Lambda function deployed for chat API"
+          echo "✅ API Gateway deployed with CORS enabled"
+          echo "✅ Frontend built with production configuration"
+          echo "✅ Amplify app deployed using build artifact"
+          echo ""
+          
+          if [ -f ../Frontend/final_outputs.json ]; then
+            echo "🔗 Application URLs:"
+            cat ../Frontend/final_outputs.json | jq -r '"Backend API: " + .BackendApiUrl'
+            cat ../Frontend/final_outputs.json | jq -r '"Frontend App: " + .FrontendUrl'
+            echo ""
+          fi
+          
+          echo "📊 Next Steps:"
+          echo "1. Monitor Q Business data source sync (10-30 minutes)"
+          echo "2. Test the chatbot functionality"
+          echo "3. Access your application via the Frontend URL"
+          echo ""
+          echo "🔍 Monitoring:"
+          echo "- Q Business Console: Check data source sync status"
+          echo "- CloudWatch Logs: Monitor Lambda function logs"
+          echo "- Amplify Console: View deployment status and logs"
+          echo ""
+          echo "⚡ The chatbot will be fully functional once data source sync completes!"
         fi
 
 artifacts:

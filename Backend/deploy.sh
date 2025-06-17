@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Prompt for GitHub URL
+# Prompt for GitHub URL (still needed for CodeBuild source)
 if [ -z "${GITHUB_URL:-}" ]; then
   read -rp "Enter source GitHub repository URL (e.g., https://github.com/OWNER/REPO): " GITHUB_URL
 fi
@@ -34,8 +34,13 @@ if [ -z "${GITHUB_OWNER:-}" ] || [ -z "${GITHUB_REPO:-}" ]; then
   fi
 fi
 
-# Prompt for GitHub token
+# GitHub token (for CodeBuild access only, not for Amplify)
 if [ -z "${GITHUB_TOKEN:-}" ]; then
+  echo ""
+  echo "ℹ️ GitHub Token Required:"
+  echo "This token is only used by CodeBuild to access your repository."
+  echo "It will NOT be used for Amplify deployment (no SSH keys created)."
+  echo ""
   read -rp "Enter GitHub token: " GITHUB_TOKEN
 fi
 
@@ -61,7 +66,7 @@ fi
 if [ -z "${IDENTITY_CENTER_INSTANCE_ARN:-}" ]; then
   echo ""
   echo "🔍 Identity Center Configuration:"
-  echo "Since your account uses the organization's Identity Center, provide the organization's Identity Center ARN."
+  echo "Provide your organization's Identity Center ARN."
   echo "Example: arn:aws:sso:::instance/ssoins-abcdefgh12345678"
   echo ""
   read -rp "Enter Identity Center Instance ARN: " IDENTITY_CENTER_INSTANCE_ARN
@@ -71,9 +76,8 @@ if [ -z "${IDENTITY_CENTER_INSTANCE_ARN:-}" ]; then
   fi
 fi
 
-# Validate that URL files exist (check locally if running from Backend directory)
+# Validate that URL files exist
 if [ -d "$URL_FILES_PATH" ]; then
-  # Check for .txt files
   txt_files=$(find "$URL_FILES_PATH" -name "*.txt" 2>/dev/null | wc -l)
   if [ "$txt_files" -eq 0 ]; then
     echo "Warning: No .txt files found in '$URL_FILES_PATH'."
@@ -89,7 +93,6 @@ if [ -d "$URL_FILES_PATH" ]; then
   fi
 else
   echo "Warning: URL files directory '$URL_FILES_PATH' not found locally."
-  echo "This is normal if running from a different location. The build will check during deployment."
 fi
 
 if [ -z "${ACTION:-}" ]; then
@@ -205,7 +208,7 @@ else
 fi
 
 # Start build
-echo "Starting build for '$CODEBUILD_PROJECT_NAME'..."
+echo "Starting automated full-stack deployment..."
 BUILD_ID=$(aws codebuild start-build \
   --project-name "$CODEBUILD_PROJECT_NAME" \
   --query 'build.id' \
@@ -221,7 +224,7 @@ else
 fi
 
 echo ""
-echo "=== Deployment Information ==="
+echo "=== Automated Deployment Information ==="
 echo "Project Name: $PROJECT_NAME"
 echo "GitHub Repo: $GITHUB_OWNER/$GITHUB_REPO"
 echo "URL Files Path: $URL_FILES_PATH (in Backend directory)"
@@ -233,11 +236,15 @@ fi
 echo "Action: $ACTION"
 echo "Build ID: $BUILD_ID"
 echo ""
-echo "The deployment will create:"
-echo "- Q Business Application with S3 data source"
-echo "- Lambda function for chat API"
-echo "- API Gateway for REST endpoints"
-echo "- Amplify app for frontend hosting"
-echo "- S3 bucket for data sources"
+echo "🚀 The automated deployment will:"
+echo "1. Deploy Q Business application, index, and retriever"
+echo "2. Create and sync web crawler data sources"
+echo "3. Deploy Lambda function and API Gateway"
+echo "4. Build frontend with API configuration"
+echo "5. Deploy to Amplify using build artifact (no GitHub integration)"
+echo "6. Verify deployment and provide access URLs"
+echo ""
+echo "⏱️ Total deployment time: ~15-20 minutes"
+echo "📊 Monitor progress in CodeBuild console above"
 
 exit 0
