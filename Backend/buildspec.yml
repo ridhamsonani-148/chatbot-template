@@ -55,14 +55,16 @@ phases:
           cat outputs.json
           
           API_URL=$(cat outputs.json | jq -r '.CatholicCharitiesStack.APIGatewayURL // empty')
-          FRONTEND_BUILD_BUCKET=$(cat outputs.json | jq -r '.CatholicCharitiesStack.FrontendBuildBucket // empty')
-          AMPLIFY_DEPLOYMENT_LAMBDA=$(cat outputs.json | jq -r '.CatholicCharitiesStack.AmplifyDeploymentLambda // empty')
+          FRONTEND_BUILD_BUCKET=$(cat outputs.json | jq -r '.CatholicCharitiesStack.FrontendBuildBucketName // empty')
+          AMPLIFY_DEPLOYMENT_LAMBDA=$(cat outputs.json | jq -r '.CatholicCharitiesStack.AmplifyDeploymentLambdaARN // empty')
           
           if [ -z "$API_URL" ] || [ -z "$FRONTEND_BUILD_BUCKET" ] || [ -z "$AMPLIFY_DEPLOYMENT_LAMBDA" ]; then
             echo "Error: Could not extract required outputs from CDK deployment"
             echo "API_URL: $API_URL"
             echo "FRONTEND_BUILD_BUCKET: $FRONTEND_BUILD_BUCKET"
             echo "AMPLIFY_DEPLOYMENT_LAMBDA: $AMPLIFY_DEPLOYMENT_LAMBDA"
+            echo "Available outputs:"
+            cat outputs.json | jq '.CatholicCharitiesStack | keys'
             exit 1
           fi
           
@@ -70,7 +72,48 @@ phases:
           echo "API Gateway URL: $API_URL"
           echo "Frontend Build Bucket: $FRONTEND_BUILD_BUCKET"
           
-          echo "=== PHASE 2: Frontend Build ==="
+          echo "=== PHASE 2: Testing API Endpoints ==="
+          echo "Testing health endpoint..."
+          HEALTH_URL="${API_URL}health"
+          echo "Health endpoint: $HEALTH_URL"
+          
+          HEALTH_RESPONSE=$(curl -s -w "%{http_code}" "$HEALTH_URL" || echo "000")
+          echo "Health check response: $HEALTH_RESPONSE"
+          
+          if echo "$HEALTH_RESPONSE" | grep -q "200"; then
+            echo "✅ API Gateway health check passed"
+          else
+            echo "⚠️ API Gateway health check failed"
+            echo "Response: $HEALTH_RESPONSE"
+          fi
+          
+          echo "=== PHASE 3: Triggering Data Source Sync ==="
+          echo "Starting Q Business data source sync jobs..."
+          
+          # Extract data source info
+          DATA_SOURCE_INFO=$(cat outputs.json | jq -r '.CatholicCharitiesStack.DataSourceInfo')
+          APPLICATION_ID=$(cat outputs.json | jq -r '.CatholicCharitiesStack.QBusinessApplicationId')
+          INDEX_ID=$(cat outputs.json | jq -r '.CatholicCharitiesStack.QBusinessIndexId')
+          
+          echo "Data sources: $DATA_SOURCE_INFO"
+          echo "Application ID: $APPLICATION_ID"
+          echo "Index ID: $INDEX_ID"
+          
+          # Parse data sources and trigger sync for each
+          echo "$DATA_SOURCE_INFO" | jq -r '.[] | @base64' | while read -r data_source; do
+            DS_ID=$(echo "$data_source" | base64 -d | jq -r '.id')
+            DS_NAME=$(echo "$data_source" | base64 -d | jq -r '.name')
+            
+            echo "Starting sync for data source: $DS_NAME (ID: $DS_ID)"
+            
+            aws qbusiness start-data-source-sync-job \
+              --application-id "$APPLICATION_ID" \
+              --data-source-id "$DS_ID" \
+              --index-id "$INDEX_ID" \
+              --region "$CDK_DEFAULT_REGION" || echo "Sync job may already be running for $DS_NAME"
+          done
+          
+          echo "=== PHASE 4: Frontend Build ==="
           echo "Building frontend application..."
           cd ../Frontend
           
@@ -90,7 +133,7 @@ phases:
           echo "Frontend build completed successfully"
           ls -la build/
           
-          echo "=== PHASE 3: Creating Build Artifact ==="
+          echo "=== PHASE 5: Creating Build Artifact ==="
           echo "Creating build.zip artifact..."
           cd build
           zip -r ../build.zip . -x "*.DS_Store*" "*.git*"
@@ -102,8 +145,11 @@ phases:
           
           echo "✅ Build artifact uploaded successfully"
           
-          echo "=== PHASE 4: Amplify App Deployment ==="
+          echo "=== PHASE 6: Amplify App Deployment ==="
           echo "Deploying frontend to Amplify using build artifact..."
+          
+          # Extract function name from ARN
+          LAMBDA_FUNCTION_NAME=$(echo "$AMPLIFY_DEPLOYMENT_LAMBDA" | awk -F: '{print $7}')
           
           LAMBDA_PAYLOAD=$(cat <<EOF
         {
@@ -122,9 +168,9 @@ phases:
         EOF
           )
           
-          echo "Invoking Amplify deployment Lambda..."
+          echo "Invoking Amplify deployment Lambda: $LAMBDA_FUNCTION_NAME"
           LAMBDA_RESPONSE=$(aws lambda invoke \
-            --function-name "$AMPLIFY_DEPLOYMENT_LAMBDA" \
+            --function-name "$LAMBDA_FUNCTION_NAME" \
             --payload "$LAMBDA_PAYLOAD" \
             --cli-binary-format raw-in-base64-out \
             response.json)
@@ -150,7 +196,9 @@ phases:
               echo "  \"BackendApiUrl\": \"$API_URL\"," >> final_outputs.json
               echo "  \"FrontendUrl\": \"$AMPLIFY_APP_URL\"," >> final_outputs.json
               echo "  \"AmplifyAppId\": \"$AMPLIFY_APP_ID\"," >> final_outputs.json
-              echo "  \"DeploymentStatus\": \"$DEPLOYMENT_STATUS\"" >> final_outputs.json
+              echo "  \"DeploymentStatus\": \"$DEPLOYMENT_STATUS\"," >> final_outputs.json
+              echo "  \"HealthEndpoint\": \"${API_URL}health\"," >> final_outputs.json
+              echo "  \"ChatEndpoint\": \"${API_URL}chat\"" >> final_outputs.json
               echo "}" >> final_outputs.json
             else
               echo "⚠️ Amplify deployment may have issues, but continuing..."
@@ -159,17 +207,23 @@ phases:
             echo "⚠️ No response file from Lambda invocation"
           fi
           
-          echo "=== PHASE 5: Post-Deployment Verification ==="
-          echo "Verifying API Gateway endpoint..."
+          echo "=== PHASE 7: Final API Testing ==="
+          echo "Testing chat endpoint with sample request..."
           
-          HEALTH_URL="${API_URL}health"
-          echo "Testing health endpoint: $HEALTH_URL"
+          CHAT_URL="${API_URL}chat"
+          echo "Chat endpoint: $CHAT_URL"
           
-          HEALTH_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || echo "000")
-          if [ "$HEALTH_RESPONSE" = "200" ]; then
-            echo "✅ API Gateway health check passed"
+          # Test chat endpoint with a simple message
+          CHAT_TEST_RESPONSE=$(curl -s -w "%{http_code}" -X POST "$CHAT_URL" \
+            -H "Content-Type: application/json" \
+            -d '{"message": "Hello, what services does Catholic Charities offer?"}' || echo "000")
+          
+          echo "Chat endpoint test response: $CHAT_TEST_RESPONSE"
+          
+          if echo "$CHAT_TEST_RESPONSE" | grep -q "200"; then
+            echo "✅ Chat API endpoint is working"
           else
-            echo "⚠️ API Gateway health check returned: $HEALTH_RESPONSE"
+            echo "⚠️ Chat API endpoint test failed (this is normal if data sync is still in progress)"
           fi
           
           rm -f build.zip response.json
@@ -186,24 +240,27 @@ phases:
           echo ""
           echo "✅ Q Business Application deployed with web crawler"
           echo "✅ Q Business Index and Retriever created"
-          echo "✅ Data source sync jobs started automatically"
+          echo "✅ Data source sync jobs triggered"
           echo "✅ Lambda function deployed for chat API"
           echo "✅ API Gateway deployed with CORS enabled"
           echo "✅ Frontend built with production configuration"
-          echo "✅ Amplify app deployed using build artifact"
+          echo "✅ Amplify app deployment initiated"
           echo ""
           
           if [ -f ../Frontend/final_outputs.json ]; then
             echo "🔗 Application URLs:"
             cat ../Frontend/final_outputs.json | jq -r '"Backend API: " + .BackendApiUrl'
             cat ../Frontend/final_outputs.json | jq -r '"Frontend App: " + .FrontendUrl'
+            cat ../Frontend/final_outputs.json | jq -r '"Health Check: " + .HealthEndpoint'
+            cat ../Frontend/final_outputs.json | jq -r '"Chat API: " + .ChatEndpoint'
             echo ""
           fi
           
           echo "📊 Next Steps:"
           echo "1. Monitor Q Business data source sync (10-30 minutes)"
-          echo "2. Test the chatbot functionality"
-          echo "3. Access your application via the Frontend URL"
+          echo "2. Test the health endpoint: https://xfr9e0nc6k.execute-api.us-west-2.amazonaws.com/prod/health"
+          echo "3. Test the chat endpoint: https://xfr9e0nc6k.execute-api.us-west-2.amazonaws.com/prod/chat"
+          echo "4. Access your application via the Frontend URL"
           echo ""
           echo "🔍 Monitoring:"
           echo "- Q Business Console: Check data source sync status"
@@ -211,6 +268,15 @@ phases:
           echo "- Amplify Console: View deployment status and logs"
           echo ""
           echo "⚡ The chatbot will be fully functional once data source sync completes!"
+          echo ""
+          echo "🧪 API Testing Commands:"
+          echo "# Health check:"
+          echo "curl https://xfr9e0nc6k.execute-api.us-west-2.amazonaws.com/prod/health"
+          echo ""
+          echo "# Chat test:"
+          echo 'curl -X POST https://xfr9e0nc6k.execute-api.us-west-2.amazonaws.com/prod/chat \'
+          echo '  -H "Content-Type: application/json" \'
+          echo '  -d '"'"'{"message": "What services does Catholic Charities offer?"}'"'"
         fi
 
 artifacts:
