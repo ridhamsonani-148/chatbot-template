@@ -132,7 +132,7 @@ def handler(event, context):
 
     // S3 Bucket for data sources (direct upload, no url-sources folder)
     const dataBucket = new s3.Bucket(this, "DataSourceBucket", {
-      bucketName: `${projectName}-data-sources-bucket`,
+      bucketName: `${projectName}-data-${this.account}-${this.region}`.substring(0, 63),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
       versioned: false,
@@ -188,7 +188,7 @@ def handler(event, context):
       },
     })
 
-    // Q Business Application
+    // Q Business Application with PUBLIC access (no Identity Center required for end users)
     const qBusinessApp = new qbusiness.CfnApplication(this, "QBusinessApplication", {
       displayName: `${projectName}-app`,
       description: "Catholic Charities AI Assistant Q Business Application",
@@ -196,6 +196,10 @@ def handler(event, context):
       identityCenterInstanceArn: identityCenterInstanceArn,
       attachmentsConfiguration: {
         attachmentsControlMode: "ENABLED",
+      },
+      // Enable public access - no authentication required for end users
+      qAppsConfiguration: {
+        qAppsControlMode: "ENABLED",
       },
     })
 
@@ -381,7 +385,7 @@ def handler(event, context):
                             logger.info(f"Found {len(urls)} URLs in {file_name}: {urls}")
                             
                             if urls:
-                                # Create Q Business data source with correct configuration
+                                # Create Q Business data source with simplified configuration
                                 data_source_response = qbusiness_client.create_data_source(
                                     applicationId=application_id,
                                     indexId=index_id,
@@ -401,11 +405,6 @@ def handler(event, context):
                                             'webPage': {
                                                 'fieldMappings': [
                                                     {
-                                                        'indexFieldName': '_category',
-                                                        'indexFieldType': 'STRING',
-                                                        'dataSourceFieldName': 'category',
-                                                    },
-                                                    {
                                                         'indexFieldName': '_source_uri',
                                                         'indexFieldType': 'STRING',
                                                         'dataSourceFieldName': 'sourceUrl',
@@ -421,16 +420,12 @@ def handler(event, context):
                                         'additionalProperties': {
                                             'rateLimit': '300',
                                             'maxFileSize': '50',
-                                            'crawlDepth': '0',  # Only crawl the exact URLs specified
-                                            'maxLinksPerUrl': '0',  # Don't follow additional links
-                                            'crawlSubDomain': False,
+                                            'crawlDepth': '2',  # Allow some depth for better content
+                                            'maxLinksPerUrl': '100',  # Allow following some links
+                                            'crawlSubDomain': True,
                                             'crawlAllDomain': False,
                                             'honorRobots': True,
                                             'crawlAttachments': False,
-                                            'inclusionURLCrawlPatterns': urls,
-                                            'exclusionURLCrawlPatterns': [],
-                                            'inclusionURLIndexPatterns': urls,
-                                            'exclusionURLIndexPatterns': [],
                                         },
                                     }
                                 )
@@ -497,17 +492,26 @@ def handler(event, context):
     dataSourcesCustomResource.node.addDependency(qBusinessIndex)
     dataSourcesCustomResource.node.addDependency(qBusinessRetriever)
 
-    // Lambda Execution Role for Chat API
+    // Lambda Execution Role for Chat API with FULL Q Business permissions
     const lambdaRole = new iam.Role(this, "LambdaExecutionRole", {
       assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole")],
       inlinePolicies: {
-        QBusinessAccess: new iam.PolicyDocument({
+        QBusinessFullAccess: new iam.PolicyDocument({
           statements: [
             new iam.PolicyStatement({
               effect: iam.Effect.ALLOW,
-              actions: ["qbusiness:ChatSync", "qbusiness:Chat"],
-              resources: [qBusinessApp.attrApplicationArn],
+              actions: [
+                "qbusiness:ChatSync",
+                "qbusiness:Chat",
+                "qbusiness:GetApplication",
+                "qbusiness:ListApplications",
+                "qbusiness:GetRetriever",
+                "qbusiness:ListRetrievers",
+                "qbusiness:GetIndex",
+                "qbusiness:ListIndices",
+              ],
+              resources: ["*"], // Allow access to all Q Business resources
             }),
           ],
         }),
@@ -552,7 +556,7 @@ def handler(event, context):
 
     // S3 Bucket for Frontend Build Artifacts
     const frontendBucket = new s3.Bucket(this, "FrontendBuildBucket", {
-      bucketName: `${projectName}-frontend`,
+      bucketName: `${projectName}-builds-${this.account}-${this.region}`.substring(0, 63),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
       versioned: false,
@@ -864,7 +868,7 @@ def handler(event, context):
       description: "S3 Bucket for Frontend Build Artifacts",
     })
 
-    new cdk.CfnOutput(this, "AmplifyDeploymentLambdaARN", {
+    new cdk.CfnOutput(this, "AmplifyDeploymentLambdaArn", {
       value: amplifyDeploymentLambda.functionArn,
       description: "Lambda Function ARN for Amplify Deployment",
     })

@@ -1,10 +1,9 @@
 "use client"
 
 import { useState, useRef, useEffect } from "react"
-import { Tooltip, Box, Typography, useMediaQuery, Link, Chip, Collapse} from "@mui/material"
+import { Tooltip, Box, Typography, useMediaQuery, Link, Chip, Collapse } from "@mui/material"
 import ChatInput from "./ChatInput"
 import UserReply from "./UserReply"
-import StreamingResponse from "./StreamingResponse"
 import BotReply from "./BotReply"
 import createMessageBlock from "../utilities/createMessageBlock"
 import { ALLOW_FAQ, CHAT_BODY_BACKGROUND, PRIMARY_MAIN, CHAT_ENDPOINT } from "../utilities/constants"
@@ -76,13 +75,21 @@ function ChatBody() {
             >
               {msg.sentBy === "USER" ? (
                 <UserReply message={msg.message} />
-              ) : msg.sentBy === "BOT" && msg.state === "PROCESSING" ? (
-                <StreamingResponse initialMessage={msg.message} setProcessing={setProcessing} />
               ) : (
                 <BotReplyWithSources message={msg.message} sources={msg.sources} />
               )}
             </Box>
           ))}
+
+          {/* Show simple loading indicator when processing */}
+          {processing && (
+            <Box sx={{ marginLeft: isSmallScreen ? "1rem" : "3rem", marginBottom: "1rem" }}>
+              <Typography variant="body2" sx={{ color: PRIMARY_MAIN, fontStyle: "italic" }}>
+                Thinking...
+              </Typography>
+            </Box>
+          )}
+
           <div ref={messagesEndRef} />
         </Box>
       ) : (
@@ -157,7 +164,7 @@ function BotReplyWithSources({ message, sources = [] }) {
           {/* Toggle text: click to expand/collapse */}
           <Typography
             variant="body2"
-            onClick={() => setShowSources(prev => !prev)}
+            onClick={() => setShowSources((prev) => !prev)}
             sx={{
               fontWeight: "bold",
               color: PRIMARY_MAIN,
@@ -178,8 +185,6 @@ function BotReplyWithSources({ message, sources = [] }) {
               <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
                 {sources.map((url, index) => {
                   const domainLabel = url
-                  // Optionally truncate domainLabel if extremely long:
-                  // const label = domainLabel.length > 30 ? domainLabel.slice(0, 30) + "..." : domainLabel
                   const label = domainLabel
 
                   return (

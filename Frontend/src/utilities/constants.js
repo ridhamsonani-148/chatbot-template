@@ -32,14 +32,8 @@ const getApiBaseUrl = () => {
     return window.ENV.REACT_APP_API_BASE_URL
   }
 
-  // Development fallback
-  if (process.env.NODE_ENV === "development") {
-    return "http://localhost:3001"
-  }
-
-  // Production fallback - this should not happen in normal deployment
-  console.warn("⚠️ API Base URL not configured. Using localhost fallback.")
-  return "http://localhost:3001"
+  // If no API URL is configured, throw an error instead of using localhost
+  throw new Error("API Base URL not configured. Please set REACT_APP_API_BASE_URL environment variable.")
 }
 
 export const API_BASE_URL = getApiBaseUrl()
@@ -86,6 +80,6 @@ if (process.env.NODE_ENV === "development") {
 
 // Runtime configuration check
 if (typeof window !== "undefined" && !process.env.REACT_APP_API_BASE_URL && !window.ENV?.REACT_APP_API_BASE_URL) {
-  console.warn("⚠️ API endpoints not configured. Using localhost defaults.")
-  console.log("💡 This is normal for local development. In production, these are set by Amplify.")
+  console.warn("⚠️ API endpoints not configured properly.")
+  console.log("💡 Make sure REACT_APP_API_BASE_URL is set in your environment variables.")
 }
