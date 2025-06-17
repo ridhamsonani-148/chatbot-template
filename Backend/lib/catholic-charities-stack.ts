@@ -868,12 +868,12 @@ def handler(event, context):
       description: "S3 Bucket for Frontend Build Artifacts",
     })
 
-    new cdk.CfnOutput(this, "AmplifyDeploymentLambdaArn", {
+    new cdk.CfnOutput(this, "AmplifyDeploymentLambdaARN", {
       value: amplifyDeploymentLambda.functionArn,
       description: "Lambda Function ARN for Amplify Deployment",
     })
 
-    new cdk.CfnOutput(this, "IdentityCenterInstanceArn", {
+    new cdk.CfnOutput(this, "IdentityCenterInstanceARN", {
       value: identityCenterInstanceArn,
       description: "Identity Center Instance ARN used",
     })
