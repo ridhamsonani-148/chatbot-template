@@ -132,7 +132,7 @@ def handler(event, context):
 
     // S3 Bucket for data sources (direct upload, no url-sources folder)
     const dataBucket = new s3.Bucket(this, "DataSourceBucket", {
-      bucketName: `${projectName}-data-sources-${this.account}-${this.region}`,
+      bucketName: `${projectName}-data-sources-bucket`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
       versioned: false,
@@ -552,7 +552,7 @@ def handler(event, context):
 
     // S3 Bucket for Frontend Build Artifacts
     const frontendBucket = new s3.Bucket(this, "FrontendBuildBucket", {
-      bucketName: `${projectName}-frontend-builds-${this.account}-${this.region}`,
+      bucketName: `${projectName}-frontend`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
       versioned: false,
