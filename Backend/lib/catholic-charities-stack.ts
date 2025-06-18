@@ -13,6 +13,7 @@ export interface CatholicCharitiesStackProps extends cdk.StackProps {
   readonly githubToken: string
   readonly projectName?: string
   readonly urlFilesPath?: string
+  readonly identityCenterInstanceArn?: string
 }
 
 export class CatholicCharitiesStack extends cdk.Stack {
