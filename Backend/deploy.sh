@@ -104,8 +104,7 @@ SOURCE=$(cat <<EOF
 {
   "type":"GITHUB",
   "location":"$GITHUB_URL",
-  "buildspec":"Backend/buildspec.yml",
-  "auth": {"type": "NO_AUTH"}
+  "buildspec":"Backend/buildspec.yml"
 }
 EOF
 )
