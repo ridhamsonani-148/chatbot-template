@@ -485,8 +485,14 @@ def handler(event, context):
           statements: [
             new iam.PolicyStatement({
               effect: iam.Effect.ALLOW,
-              actions: ["s3:GetObject", "s3:GetObjectVersion"],
-              resources: [`${frontendBucket.bucketArn}/*`],
+              actions: [
+                "s3:GetObject",
+                "s3:GetObjectVersion",
+                "s3:GetObjectAcl",
+                "s3:GetObjectVersionAcl",
+                "s3:ListBucket",
+              ],
+              resources: [frontendBucket.bucketArn, `${frontendBucket.bucketArn}/*`],
             }),
           ],
         }),
