@@ -72,23 +72,74 @@ phases:
           
           echo "=== PHASE 4: Frontend Build and Automated Deployment ==="
           cd ../Frontend
-          echo "REACT_APP_API_BASE_URL=$API_URL" > .env
-          echo "REACT_APP_CHAT_ENDPOINT=${API_URL}chat" >> .env
-          echo "REACT_APP_HEALTH_ENDPOINT=${API_URL}health" >> .env
-          npm ci
+          
+          # CRITICAL: Set PUBLIC_URL to empty string for root deployment
+          export PUBLIC_URL=""
+          export GENERATE_SOURCEMAP=false
+          
+          # Create environment file
+          echo "REACT_APP_API_BASE_URL=$API_URL" > .env.production
+          echo "REACT_APP_CHAT_ENDPOINT=${API_URL}chat" >> .env.production
+          echo "REACT_APP_HEALTH_ENDPOINT=${API_URL}health" >> .env.production
+          echo "PUBLIC_URL=" >> .env.production
+          echo "GENERATE_SOURCEMAP=false" >> .env.production
+          
+          # Clean previous builds
+          rm -rf build/
+          rm -rf node_modules/.cache/
+          
+          # Install dependencies and build
+          npm ci --production=false
           npm run build
+          
+          # Verify build was successful
+          if [ ! -f "build/index.html" ]; then
+            echo "❌ ERROR: Build failed - index.html not found!"
+            exit 1
+          fi
+          
+          # Check if static files exist
+          if [ ! -d "build/static" ]; then
+            echo "❌ ERROR: Build failed - static directory not found!"
+            exit 1
+          fi
+          
+          # Verify index.html contains proper script tags (not %PUBLIC_URL%)
+          if grep -q "%PUBLIC_URL%" build/index.html; then
+            echo "❌ ERROR: Build incomplete - %PUBLIC_URL% not replaced!"
+            cat build/index.html
+            exit 1
+          fi
+          
+          echo "=== Build Directory Contents ==="
+          ls -la build/
+          echo "=== Static Directory Contents ==="
+          ls -la build/static/
+          echo "=== Index.html Preview ==="
+          head -20 build/index.html
           
           # Create build artifact
           cd build
-          zip -r ../build.zip .
+          zip -r ../build.zip . -x "*.DS_Store" "*.map"
           cd ..
           
-          # Upload to S3 - this will automatically trigger Amplify deployment via EventBridge
+          # Verify zip contents
+          echo "=== Build.zip Contents ==="
+          unzip -l build.zip | head -20
+          
+          # Upload to S3
           BUILD_KEY="builds/build-$(date +%s).zip"
           aws s3 cp build.zip s3://$FRONTEND_BUILD_BUCKET/$BUILD_KEY
           
           echo "✅ Build artifact uploaded to S3. Amplify deployment will start automatically."
           echo "📱 Amplify App URL: https://main.$AMPLIFY_APP_ID.amplifyapp.com"
+          
+          # Wait for deployment to start
+          sleep 30
+          
+          # Check deployment status
+          echo "=== Checking Amplify Deployment Status ==="
+          aws amplify list-jobs --app-id "$AMPLIFY_APP_ID" --branch-name main --max-results 1
           
           echo "=== PHASE 5: Final API Testing ==="
           CHAT_TEST_RESPONSE=$(curl -s -w "%{http_code}" -X POST "${API_URL}chat" \
@@ -114,8 +165,11 @@ phases:
           echo "Chat API: ${API_URL}chat"
           echo "Health Check: ${API_URL}health"
           echo "Amplify URL: https://main.$AMPLIFY_APP_ID.amplifyapp.com"
-          echo "Monitor Q Business data source sync in the Q Business Console."
-          echo "Monitor Amplify deployment in the Amplify Console."
+          echo ""
+          echo "🔍 Troubleshooting:"
+          echo "1. Check Amplify Console for deployment logs"
+          echo "2. Verify build.zip contains index.html with proper script tags"
+          echo "3. Check browser console for JavaScript errors"
         fi
 
 artifacts:
