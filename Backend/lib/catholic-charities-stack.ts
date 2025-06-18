@@ -5,7 +5,6 @@ import * as apigateway from "aws-cdk-lib/aws-apigateway"
 import * as iam from "aws-cdk-lib/aws-iam"
 import * as qbusiness from "aws-cdk-lib/aws-qbusiness"
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment"
-import * as amplify from "aws-cdk-lib/aws-amplify"
 import * as events from "aws-cdk-lib/aws-events"
 import * as targets from "aws-cdk-lib/aws-events-targets"
 import type { Construct } from "constructs"
@@ -43,34 +42,8 @@ export class CatholicCharitiesStack extends cdk.Stack {
       versioned: false,
       publicReadAccess: false,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      eventBridgeEnabled: true,
+      eventBridgeEnabled: true, // Enable EventBridge notifications
     })
-
-    // Add bucket policy to allow Amplify service access
-    frontendBucket.addToResourcePolicy(
-      new iam.PolicyStatement({
-        sid: "AllowAmplifyServiceAccess",
-        effect: iam.Effect.ALLOW,
-        principals: [new iam.ServicePrincipal("amplify.amazonaws.com")],
-        actions: [
-          "s3:GetObject",
-          "s3:GetObjectAcl",
-          "s3:GetObjectVersion",
-          "s3:GetObjectVersionAcl",
-          "s3:PutObjectAcl",
-          "s3:PutObjectVersionAcl",
-          "s3:ListBucket",
-          "s3:GetBucketAcl",
-          "s3:GetBucketLocation",
-        ],
-        resources: [`${frontendBucket.bucketArn}/*`, frontendBucket.bucketArn],
-        conditions: {
-          StringEquals: {
-            "aws:SourceAccount": this.account,
-          },
-        },
-      }),
-    )
 
     // Deploy URL files to S3
     const urlFilesDeployment = new s3deploy.BucketDeployment(this, "DeployUrlFiles", {
@@ -439,55 +412,7 @@ def handler(event, context):
     const healthResource = api.root.addResource("health")
     healthResource.addMethod("GET", lambdaIntegration)
 
-    // Amplify App (created in CloudFormation, not buildspec)
-    const amplifyApp = new amplify.CfnApp(this, "AmplifyApp", {
-      name: `${projectName}-frontend`,
-      platform: "WEB",
-      environmentVariables: [
-        {
-          name: "REACT_APP_API_BASE_URL",
-          value: api.url,
-        },
-        {
-          name: "REACT_APP_CHAT_ENDPOINT",
-          value: `${api.url}chat`,
-        },
-        {
-          name: "REACT_APP_HEALTH_ENDPOINT",
-          value: `${api.url}health`,
-        },
-      ],
-      customRules: [
-        {
-          source: "/<*>",
-          target: "/index.html",
-          status: "200",
-        },
-      ],
-    })
-
-    // Amplify Branch
-    const amplifyBranch = new amplify.CfnBranch(this, "AmplifyBranch", {
-      appId: amplifyApp.attrAppId,
-      branchName: "main",
-      stage: "PRODUCTION",
-      environmentVariables: [
-        {
-          name: "REACT_APP_API_BASE_URL",
-          value: api.url,
-        },
-        {
-          name: "REACT_APP_CHAT_ENDPOINT",
-          value: `${api.url}chat`,
-        },
-        {
-          name: "REACT_APP_HEALTH_ENDPOINT",
-          value: `${api.url}health`,
-        },
-      ],
-    })
-
-    // FIXED: Lambda function to handle EventBridge events (not S3 direct events)
+    // HYBRID APPROACH: Lambda function to deploy to Amplify app created via CLI
     const amplifyDeployerRole = new iam.Role(this, "AmplifyDeployerRole", {
       assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole")],
@@ -502,6 +427,8 @@ def handler(event, context):
                 "amplify:GetBranch",
                 "amplify:ListApps",
                 "amplify:ListBranches",
+                "amplify:GetJob",
+                "amplify:ListJobs",
               ],
               resources: ["*"],
             }),
@@ -511,24 +438,7 @@ def handler(event, context):
           statements: [
             new iam.PolicyStatement({
               effect: iam.Effect.ALLOW,
-              actions: [
-                "s3:GetObject",
-                "s3:GetObjectVersion",
-                "s3:GetObjectAcl",
-                "s3:GetObjectVersionAcl",
-                "s3:PutObjectAcl",
-                "s3:PutObjectVersionAcl",
-                "s3:ListBucket",
-                "s3:GetBucketAcl",
-                "s3:GetBucketLocation",
-                "s3:GetBucketVersioning",
-                "s3:PutBucketAcl",
-                "s3:ListBucketVersions",
-                "s3:GetBucketPolicy",
-                "s3:GetBucketPolicyStatus",
-                "s3:GetBucketPublicAccessBlock",
-                "s3:GetEncryptionConfiguration",
-              ],
+              actions: ["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket"],
               resources: [frontendBucket.bucketArn, `${frontendBucket.bucketArn}/*`],
             }),
           ],
@@ -543,6 +453,7 @@ def handler(event, context):
 import boto3
 import json
 import logging
+import os
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -553,7 +464,7 @@ def handler(event, context):
     try:
         logger.info(f"Received EventBridge event: {json.dumps(event)}")
         
-        # Handle EventBridge event format (not S3 direct event)
+        # Handle EventBridge event format
         if event.get('source') == 'aws.s3' and event.get('detail-type') == 'Object Created':
             detail = event.get('detail', {})
             bucket_name = detail.get('bucket', {}).get('name')
@@ -563,7 +474,16 @@ def handler(event, context):
             
             # Check if this is a build.zip file
             if object_key and object_key.startswith('builds/') and object_key.endswith('.zip'):
-                app_id = "${amplifyApp.attrAppId}"
+                # Get Amplify App ID from environment variable (set by buildspec)
+                app_id = os.environ.get('AMPLIFY_APP_ID')
+                
+                if not app_id:
+                    logger.error("AMPLIFY_APP_ID environment variable not set")
+                    return {
+                        'statusCode': 400,
+                        'body': json.dumps({'error': 'AMPLIFY_APP_ID not configured'})
+                    }
+                
                 branch_name = "main"
                 
                 logger.info(f"Starting Amplify deployment for app {app_id}, branch {branch_name}")
@@ -608,7 +528,7 @@ def handler(event, context):
       timeout: cdk.Duration.minutes(5),
       role: amplifyDeployerRole,
       environment: {
-        AMPLIFY_APP_ID: amplifyApp.attrAppId,
+        AMPLIFY_APP_ID: "placeholder", // Will be updated by buildspec
       },
     })
 
@@ -682,14 +602,9 @@ def handler(event, context):
       description: "S3 Bucket for Frontend Build Artifacts",
     })
 
-    new cdk.CfnOutput(this, "AmplifyAppId", {
-      value: amplifyApp.attrAppId,
-      description: "Amplify App ID",
-    })
-
-    new cdk.CfnOutput(this, "AmplifyAppURL", {
-      value: `https://main.${amplifyApp.attrAppId}.amplifyapp.com`,
-      description: "Amplify App URL",
+    new cdk.CfnOutput(this, "AmplifyDeployerFunctionName", {
+      value: amplifyDeployer.functionName,
+      description: "Amplify Deployer Lambda Function Name",
     })
   }
 }

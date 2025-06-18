@@ -34,12 +34,12 @@ if [ -z "${GITHUB_OWNER:-}" ] || [ -z "${GITHUB_REPO:-}" ]; then
   fi
 fi
 
-# GitHub token (for CodeBuild access only, not for Amplify)
+# GitHub token (for CodeBuild access only)
 if [ -z "${GITHUB_TOKEN:-}" ]; then
   echo ""
   echo "ℹ️ GitHub Token Required:"
   echo "This token is only used by CodeBuild to access your repository."
-  echo "It will NOT be used for Amplify deployment (no SSH keys created)."
+  echo "Amplify app will be created via CLI (no GitHub integration)."
   echo ""
   read -rp "Enter GitHub token: " GITHUB_TOKEN
 fi
@@ -50,19 +50,16 @@ if [ -z "${PROJECT_NAME:-}" ]; then
   PROJECT_NAME=${PROJECT_NAME:-catholic-charities-chatbot}
 fi
 
-# Prompt for URL files path (relative to Backend directory)
 if [ -z "${URL_FILES_PATH:-}" ]; then
   read -rp "Enter path to URL files in Backend directory [default: data-sources]: " URL_FILES_PATH
   URL_FILES_PATH=${URL_FILES_PATH:-data-sources}
 fi
 
-# Prompt for AWS region (default to us-west-2 for Q Business availability)
 if [ -z "${AWS_REGION:-}" ]; then
   read -rp "Enter AWS region [default: us-west-2]: " AWS_REGION
   AWS_REGION=${AWS_REGION:-us-west-2}
 fi
 
-# Prompt for Identity Center ARN (required)
 if [ -z "${IDENTITY_CENTER_INSTANCE_ARN:-}" ]; then
   echo ""
   echo "🔍 Identity Center Configuration:"
@@ -74,25 +71,6 @@ if [ -z "${IDENTITY_CENTER_INSTANCE_ARN:-}" ]; then
     echo "Error: Identity Center Instance ARN is required."
     exit 1
   fi
-fi
-
-# Validate that URL files exist
-if [ -d "$URL_FILES_PATH" ]; then
-  txt_files=$(find "$URL_FILES_PATH" -name "*.txt" 2>/dev/null | wc -l)
-  if [ "$txt_files" -eq 0 ]; then
-    echo "Warning: No .txt files found in '$URL_FILES_PATH'."
-    echo "Please add .txt files with URLs (one URL per line)."
-    read -rp "Continue anyway? (y/n): " CONTINUE
-    CONTINUE=$(printf '%s' "$CONTINUE" | tr '[:upper:]' '[:lower:]')
-    if [[ "$CONTINUE" != "y" && "$CONTINUE" != "yes" ]]; then
-      exit 1
-    fi
-  else
-    echo "Found $txt_files URL file(s) in '$URL_FILES_PATH':"
-    find "$URL_FILES_PATH" -name "*.txt" -exec basename {} \;
-  fi
-else
-  echo "Warning: URL files directory '$URL_FILES_PATH' not found locally."
 fi
 
 if [ -z "${ACTION:-}" ]; then
@@ -146,7 +124,7 @@ else
 fi
 
 # Create CodeBuild project
-CODEBUILD_PROJECT_NAME="${PROJECT_NAME}-deploy"
+CODEBUILD_PROJECT_NAME="${PROJECT_NAME}-hybrid-deploy"
 echo "Creating CodeBuild project: $CODEBUILD_PROJECT_NAME"
 
 # Build environment variables array
@@ -208,7 +186,7 @@ else
 fi
 
 # Start build
-echo "Starting automated full-stack deployment..."
+echo "Starting hybrid deployment..."
 BUILD_ID=$(aws codebuild start-build \
   --project-name "$CODEBUILD_PROJECT_NAME" \
   --query 'build.id' \
@@ -224,25 +202,22 @@ else
 fi
 
 echo ""
-echo "=== Automated Deployment Information ==="
+echo "=== Hybrid Deployment Information ==="
 echo "Project Name: $PROJECT_NAME"
 echo "GitHub Repo: $GITHUB_OWNER/$GITHUB_REPO"
-echo "URL Files Path: $URL_FILES_PATH (in Backend directory)"
-echo "AWS Region: $AWS_REGION"
-echo "Identity Center ARN: $IDENTITY_CENTER_INSTANCE_ARN"
-if [ -d "$URL_FILES_PATH" ]; then
-  echo "URL Files Found: $(find "$URL_FILES_PATH" -name "*.txt" 2>/dev/null | wc -l)"
-fi
+echo "Deployment Strategy: HYBRID"
+echo "  - Backend: CloudFormation (CDK)"
+echo "  - Amplify App: CLI (buildspec)"
+echo "  - Deployment: Automated (EventBridge + Lambda)"
 echo "Action: $ACTION"
 echo "Build ID: $BUILD_ID"
 echo ""
-echo "🚀 The automated deployment will:"
-echo "1. Deploy Q Business application, index, and retriever"
-echo "2. Create and sync web crawler data sources"
-echo "3. Deploy Lambda function and API Gateway"
-echo "4. Build frontend with API configuration"
-echo "5. Deploy to Amplify using build artifact (no GitHub integration)"
-echo "6. Verify deployment and provide access URLs"
+echo "🚀 The hybrid deployment will:"
+echo "1. Deploy backend via CloudFormation"
+echo "2. Create/update Amplify app via CLI"
+echo "3. Build and upload frontend to S3"
+echo "4. Automatically deploy via EventBridge trigger"
+echo "5. No manual steps required!"
 echo ""
 echo "⏱️ Total deployment time: ~15-20 minutes"
 echo "📊 Monitor progress in CodeBuild console above"

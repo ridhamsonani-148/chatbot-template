@@ -20,6 +20,14 @@ phases:
     commands:
       - |
         if [ "$ACTION" = "destroy" ]; then
+          # Clean up Amplify app first
+          AMPLIFY_APP_ID=$(aws amplify list-apps --query "apps[?name=='${PROJECT_NAME}-frontend'].appId" --output text 2>/dev/null || echo "")
+          if [ -n "$AMPLIFY_APP_ID" ] && [ "$AMPLIFY_APP_ID" != "None" ]; then
+            echo "Deleting Amplify app: $AMPLIFY_APP_ID"
+            aws amplify delete-app --app-id "$AMPLIFY_APP_ID" || echo "Failed to delete Amplify app"
+          fi
+          
+          # Then destroy CDK stack
           cdk destroy CatholicCharitiesStack --force \
             --context githubOwner="$GITHUB_OWNER" \
             --context githubRepo="$GITHUB_REPO" \
@@ -40,9 +48,8 @@ phases:
           
           API_URL=$(cat outputs.json | jq -r '.CatholicCharitiesStack.APIGatewayURL // empty')
           FRONTEND_BUILD_BUCKET=$(cat outputs.json | jq -r '.CatholicCharitiesStack.FrontendBuildBucketName // empty')
-          AMPLIFY_APP_ID=$(cat outputs.json | jq -r '.CatholicCharitiesStack.AmplifyAppId // empty')
           
-          if [ -z "$API_URL" ] || [ -z "$FRONTEND_BUILD_BUCKET" ] || [ -z "$AMPLIFY_APP_ID" ]; then
+          if [ -z "$API_URL" ] || [ -z "$FRONTEND_BUILD_BUCKET" ]; then
             echo "Error: Could not extract required outputs from CDK deployment"
             exit 1
           fi
@@ -70,10 +77,45 @@ phases:
               --region "$CDK_DEFAULT_REGION" || echo "Sync job may already be running for $DS_NAME"
           done
           
-          echo "=== PHASE 4: Frontend Build and Automated Deployment ==="
+          echo "=== PHASE 4: Amplify App Setup ==="
+          # Check if Amplify app already exists
+          AMPLIFY_APP_ID=$(aws amplify list-apps --query "apps[?name=='${PROJECT_NAME}-frontend'].appId" --output text 2>/dev/null || echo "")
+          
+          if [ -z "$AMPLIFY_APP_ID" ] || [ "$AMPLIFY_APP_ID" = "None" ]; then
+            echo "Creating new Amplify app..."
+            AMPLIFY_APP_ID=$(aws amplify create-app \
+              --name "${PROJECT_NAME}-frontend" \
+              --platform WEB \
+              --environment-variables "REACT_APP_API_BASE_URL=$API_URL,REACT_APP_CHAT_ENDPOINT=${API_URL}chat,REACT_APP_HEALTH_ENDPOINT=${API_URL}health" \
+              --custom-rules '[{"source":"/<*>","target":"/index.html","status":"200"}]' \
+              --query 'app.appId' \
+              --output text)
+            echo "✅ Created Amplify app with ID: $AMPLIFY_APP_ID"
+          else
+            echo "✅ Using existing Amplify app: $AMPLIFY_APP_ID"
+            # Update environment variables
+            aws amplify update-app \
+              --app-id "$AMPLIFY_APP_ID" \
+              --environment-variables "REACT_APP_API_BASE_URL=$API_URL,REACT_APP_CHAT_ENDPOINT=${API_URL}chat,REACT_APP_HEALTH_ENDPOINT=${API_URL}health"
+          fi
+          
+          # Create/update main branch
+          aws amplify create-branch \
+            --app-id "$AMPLIFY_APP_ID" \
+            --branch-name main \
+            --stage PRODUCTION \
+            --environment-variables "REACT_APP_API_BASE_URL=$API_URL,REACT_APP_CHAT_ENDPOINT=${API_URL}chat,REACT_APP_HEALTH_ENDPOINT=${API_URL}health" \
+            --no-cli-pager 2>/dev/null || echo "Branch already exists, updating..."
+          
+          # Update the Lambda function with the Amplify App ID
+          aws lambda update-function-configuration \
+            --function-name "$(cat outputs.json | jq -r '.CatholicCharitiesStack.AmplifyDeployerFunctionName')" \
+            --environment "Variables={AMPLIFY_APP_ID=$AMPLIFY_APP_ID}"
+          
+          echo "=== PHASE 5: Frontend Build and Automated Deployment ==="
           cd ../Frontend
           
-          # CRITICAL: Set PUBLIC_URL to empty string for root deployment
+          # Set build configuration
           export PUBLIC_URL=""
           export GENERATE_SOURCEMAP=false
           
@@ -84,73 +126,38 @@ phases:
           echo "PUBLIC_URL=" >> .env.production
           echo "GENERATE_SOURCEMAP=false" >> .env.production
           
-          # Clean previous builds
-          rm -rf build/
-          rm -rf node_modules/.cache/
-          
-          # Install dependencies and build
+          # Clean and build
+          rm -rf build/ node_modules/.cache/
           npm ci --production=false
           npm run build
           
-          # Verify build was successful
+          # Verify build
           if [ ! -f "build/index.html" ]; then
             echo "❌ ERROR: Build failed - index.html not found!"
             exit 1
           fi
           
-          # Check if static files exist
-          if [ ! -d "build/static" ]; then
-            echo "❌ ERROR: Build failed - static directory not found!"
-            exit 1
-          fi
-          
-          # Verify index.html contains proper script tags (not %PUBLIC_URL%)
           if grep -q "%PUBLIC_URL%" build/index.html; then
             echo "❌ ERROR: Build incomplete - %PUBLIC_URL% not replaced!"
-            cat build/index.html
             exit 1
           fi
           
-          echo "=== Build Directory Contents ==="
-          ls -la build/
-          echo "=== Static Directory Contents ==="
-          ls -la build/static/
-          echo "=== Index.html Preview ==="
-          head -20 build/index.html
+          echo "✅ Build successful"
           
-          # Create build artifact
+          # Create and upload build artifact
           cd build
           zip -r ../build.zip . -x "*.DS_Store" "*.map"
           cd ..
           
-          # Verify zip contents
-          echo "=== Build.zip Contents ==="
-          unzip -l build.zip | head -20
-          
-          # Upload to S3
           BUILD_KEY="builds/build-$(date +%s).zip"
           aws s3 cp build.zip s3://$FRONTEND_BUILD_BUCKET/$BUILD_KEY
           
-          echo "✅ Build artifact uploaded to S3. Amplify deployment will start automatically."
+          echo "✅ Build artifact uploaded to S3: $BUILD_KEY"
+          echo "🚀 Automated deployment will start via EventBridge trigger"
           echo "📱 Amplify App URL: https://main.$AMPLIFY_APP_ID.amplifyapp.com"
           
-          # Wait for deployment to start
-          sleep 30
-          
-          # Check deployment status
-          echo "=== Checking Amplify Deployment Status ==="
-          aws amplify list-jobs --app-id "$AMPLIFY_APP_ID" --branch-name main --max-results 1
-          
-          echo "=== PHASE 5: Final API Testing ==="
-          CHAT_TEST_RESPONSE=$(curl -s -w "%{http_code}" -X POST "${API_URL}chat" \
-            -H "Content-Type: application/json" \
-            -d '{"message": "Hello, what services does Catholic Charities offer?"}' || echo "000")
-          
-          if echo "$CHAT_TEST_RESPONSE" | grep -q "200"; then
-            echo "✅ Chat API endpoint is working"
-          else
-            echo "⚠️ Chat API endpoint test failed (may be due to data sync in progress)"
-          fi
+          # Store Amplify App ID for post_build
+          echo "$AMPLIFY_APP_ID" > ../amplify_app_id.txt
           
           cd ../Backend
         fi
@@ -160,16 +167,22 @@ phases:
       - echo "=== Deployment Complete ==="
       - |
         if [ "$ACTION" = "deploy" ]; then
-          echo "🎉 Full-Stack Deployment Summary:"
-          echo "Frontend: Automated deployment triggered via S3 upload"
+          AMPLIFY_APP_ID=$(cat ../amplify_app_id.txt 2>/dev/null || echo "")
+          echo "🎉 Hybrid Deployment Summary:"
+          echo "✅ Backend: Deployed via CloudFormation"
+          echo "✅ Amplify App: Created/Updated via CLI"
+          echo "✅ Frontend: Automated deployment triggered via S3 upload"
+          echo ""
+          echo "🔗 URLs:"
           echo "Chat API: ${API_URL}chat"
           echo "Health Check: ${API_URL}health"
-          echo "Amplify URL: https://main.$AMPLIFY_APP_ID.amplifyapp.com"
+          if [ -n "$AMPLIFY_APP_ID" ]; then
+            echo "Amplify URL: https://main.$AMPLIFY_APP_ID.amplifyapp.com"
+          fi
           echo ""
-          echo "🔍 Troubleshooting:"
-          echo "1. Check Amplify Console for deployment logs"
-          echo "2. Verify build.zip contains index.html with proper script tags"
-          echo "3. Check browser console for JavaScript errors"
+          echo "📊 Monitor:"
+          echo "- Q Business data sync in Q Business Console"
+          echo "- Amplify deployment in Amplify Console"
         fi
 
 artifacts:
