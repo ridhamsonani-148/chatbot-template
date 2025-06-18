@@ -330,9 +330,9 @@ def handler(event, context):
                                         'additionalProperties': {
                                             'rateLimit': '300',
                                             'maxFileSize': '50',
-                                            'crawlDepth': '2',
+                                            'crawlDepth': '0',
                                             'maxLinksPerUrl': '100',
-                                            'crawlSubDomain': True,
+                                            'crawlSubDomain': False,
                                             'crawlAllDomain': False,
                                             'honorRobots': True,
                                             'crawlAttachments': False,

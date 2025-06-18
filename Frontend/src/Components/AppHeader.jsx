@@ -50,7 +50,7 @@ function AppHeader({ showLeftNav, setLeftNav }) {
             src={CatholicSymbol || "/placeholder.svg"}
             alt="Catholic Symbol"
             width={isSmallScreen ? "50" : "100"}
-            height={isSmallScreen ? "40" : "700"}
+            height={isSmallScreen ? "40" : "70"}
           />
           <Typography
             variant={isSmallScreen ? "h5" : "h5"}
