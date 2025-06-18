@@ -79,33 +79,24 @@ phases:
           
           echo "=== PHASE 4: Amplify App Setup ==="
           # Check if Amplify app already exists
-          AMPLIFY_APP_ID=$(aws amplify list-apps --query "apps[?name=='${PROJECT_NAME}-frontend'].appId" --output text 2>/dev/null || echo "")
-          
-          if [ -z "$AMPLIFY_APP_ID" ] || [ "$AMPLIFY_APP_ID" = "None" ]; then
-            echo "Creating new Amplify app..."
-            AMPLIFY_APP_ID=$(aws amplify create-app \
-              --name "${PROJECT_NAME}-frontend" \
-              --platform WEB \
-              --environment-variables "REACT_APP_API_BASE_URL=$API_URL,REACT_APP_CHAT_ENDPOINT=${API_URL}chat,REACT_APP_HEALTH_ENDPOINT=${API_URL}health" \
-              --custom-rules '[{"source":"/<*>","target":"/index.html","status":"200"}]' \
-              --query 'app.appId' \
-              --output text)
-            echo "✅ Created Amplify app with ID: $AMPLIFY_APP_ID"
-          else
-            echo "✅ Using existing Amplify app: $AMPLIFY_APP_ID"
-            # Update environment variables
-            aws amplify update-app \
-              --app-id "$AMPLIFY_APP_ID" \
-              --environment-variables "REACT_APP_API_BASE_URL=$API_URL,REACT_APP_CHAT_ENDPOINT=${API_URL}chat,REACT_APP_HEALTH_ENDPOINT=${API_URL}health"
-          fi
-          
-          # Create/update main branch
+          echo "Creating/updating Amplify app..."
+          AMPLIFY_APP_ID=$(aws amplify create-app \
+            --name "${PROJECT_NAME}-frontend" \
+            --platform WEB \
+            --environment-variables "REACT_APP_API_BASE_URL=$API_URL,REACT_APP_CHAT_ENDPOINT=${API_URL}chat,REACT_APP_HEALTH_ENDPOINT=${API_URL}health" \
+            --query 'app.appId' \
+            --output text 2>/dev/null || \
+            aws amplify list-apps \
+            --query "apps[?name=='${PROJECT_NAME}-frontend'].appId" \
+            --output text)
+            
           aws amplify create-branch \
             --app-id "$AMPLIFY_APP_ID" \
             --branch-name main \
             --stage PRODUCTION \
             --environment-variables "REACT_APP_API_BASE_URL=$API_URL,REACT_APP_CHAT_ENDPOINT=${API_URL}chat,REACT_APP_HEALTH_ENDPOINT=${API_URL}health" \
-            --no-cli-pager 2>/dev/null || echo "Branch already exists, updating..."
+            --no-cli-pager 2>/dev/null || echo "Branch already exists"
+
           
           # Update the Lambda function with the Amplify App ID
           aws lambda update-function-configuration \
