@@ -40,8 +40,9 @@ phases:
           
           API_URL=$(cat outputs.json | jq -r '.CatholicCharitiesStack.APIGatewayURL // empty')
           FRONTEND_BUILD_BUCKET=$(cat outputs.json | jq -r '.CatholicCharitiesStack.FrontendBuildBucketName // empty')
+          AMPLIFY_APP_ID=$(cat outputs.json | jq -r '.CatholicCharitiesStack.AmplifyAppId // empty')
           
-          if [ -z "$API_URL" ] || [ -z "$FRONTEND_BUILD_BUCKET" ]; then
+          if [ -z "$API_URL" ] || [ -z "$FRONTEND_BUILD_BUCKET" ] || [ -z "$AMPLIFY_APP_ID" ]; then
             echo "Error: Could not extract required outputs from CDK deployment"
             exit 1
           fi
@@ -69,7 +70,7 @@ phases:
               --region "$CDK_DEFAULT_REGION" || echo "Sync job may already be running for $DS_NAME"
           done
           
-          echo "=== PHASE 4: Frontend Build and Deployment ==="
+          echo "=== PHASE 4: Frontend Build and Automated Deployment ==="
           cd ../Frontend
           echo "REACT_APP_API_BASE_URL=$API_URL" > .env
           echo "REACT_APP_CHAT_ENDPOINT=${API_URL}chat" >> .env
@@ -77,34 +78,17 @@ phases:
           npm ci
           npm run build
           
-          echo "Creating/updating Amplify app..."
-          AMPLIFY_APP_ID=$(aws amplify create-app \
-            --name "${PROJECT_NAME}-frontend" \
-            --platform WEB \
-            --environment-variables "REACT_APP_API_BASE_URL=$API_URL,REACT_APP_CHAT_ENDPOINT=${API_URL}chat,REACT_APP_HEALTH_ENDPOINT=${API_URL}health" \
-            --query 'app.appId' \
-            --output text 2>/dev/null || \
-            aws amplify list-apps \
-            --query "apps[?name=='${PROJECT_NAME}-frontend'].appId" \
-            --output text)
-          
-          aws amplify create-branch \
-            --app-id "$AMPLIFY_APP_ID" \
-            --branch-name main \
-            --stage PRODUCTION \
-            --environment-variables "REACT_APP_API_BASE_URL=$API_URL,REACT_APP_CHAT_ENDPOINT=${API_URL}chat,REACT_APP_HEALTH_ENDPOINT=${API_URL}health" \
-            --no-cli-pager 2>/dev/null || echo "Branch already exists"
-          
+          # Create build artifact
           cd build
           zip -r ../build.zip .
           cd ..
+          
+          # Upload to S3 - this will automatically trigger Amplify deployment via EventBridge
           BUILD_KEY="builds/build-$(date +%s).zip"
           aws s3 cp build.zip s3://$FRONTEND_BUILD_BUCKET/$BUILD_KEY
           
-          aws amplify start-deployment \
-            --app-id "$AMPLIFY_APP_ID" \
-            --branch-name main \
-            --source-url "s3://$FRONTEND_BUILD_BUCKET/$BUILD_KEY"
+          echo "✅ Build artifact uploaded to S3. Amplify deployment will start automatically."
+          echo "📱 Amplify App URL: https://main.$AMPLIFY_APP_ID.amplifyapp.com"
           
           echo "=== PHASE 5: Final API Testing ==="
           CHAT_TEST_RESPONSE=$(curl -s -w "%{http_code}" -X POST "${API_URL}chat" \
@@ -126,10 +110,12 @@ phases:
       - |
         if [ "$ACTION" = "deploy" ]; then
           echo "🎉 Full-Stack Deployment Summary:"
-          echo "Frontend deployment initiated. Check Amplify Console for status."
+          echo "Frontend: Automated deployment triggered via S3 upload"
           echo "Chat API: ${API_URL}chat"
           echo "Health Check: ${API_URL}health"
+          echo "Amplify URL: https://main.$AMPLIFY_APP_ID.amplifyapp.com"
           echo "Monitor Q Business data source sync in the Q Business Console."
+          echo "Monitor Amplify deployment in the Amplify Console."
         fi
 
 artifacts:

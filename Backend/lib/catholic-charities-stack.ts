@@ -5,6 +5,9 @@ import * as apigateway from "aws-cdk-lib/aws-apigateway"
 import * as iam from "aws-cdk-lib/aws-iam"
 import * as qbusiness from "aws-cdk-lib/aws-qbusiness"
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment"
+import * as amplify from "aws-cdk-lib/aws-amplify"
+import * as events from "aws-cdk-lib/aws-events"
+import * as targets from "aws-cdk-lib/aws-events-targets"
 import type { Construct } from "constructs"
 
 export interface CatholicCharitiesStackProps extends cdk.StackProps {
@@ -23,6 +26,7 @@ export class CatholicCharitiesStack extends cdk.Stack {
     const projectName = props.projectName || "catholic-charities-chatbot"
     const urlFilesPath = props.urlFilesPath || "data-sources"
 
+    // S3 Buckets
     const dataBucket = new s3.Bucket(this, "DataSourceBucket", {
       bucketName: `${projectName}-data-${this.account}-${this.region}`.substring(0, 63),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -32,12 +36,24 @@ export class CatholicCharitiesStack extends cdk.Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
     })
 
+    const frontendBucket = new s3.Bucket(this, "FrontendBuildBucket", {
+      bucketName: `${projectName}-builds-${this.account}-${this.region}`.substring(0, 63),
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      versioned: false,
+      publicReadAccess: false,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      eventBridgeEnabled: true, // Enable EventBridge for S3 events
+    })
+
+    // Deploy URL files to S3
     const urlFilesDeployment = new s3deploy.BucketDeployment(this, "DeployUrlFiles", {
       sources: [s3deploy.Source.asset(`./${urlFilesPath}`)],
       destinationBucket: dataBucket,
       include: ["*.txt"],
     })
 
+    // Q Business Application Setup
     const applicationRole = new iam.Role(this, "QBusinessApplicationRole", {
       assumedBy: new iam.ServicePrincipal("qbusiness.amazonaws.com", {
         conditions: {
@@ -82,7 +98,7 @@ export class CatholicCharitiesStack extends cdk.Stack {
       displayName: `${projectName}-app`,
       description: "Catholic Charities AI Assistant Q Business Application",
       roleArn: applicationRole.roleArn,
-      identityType: "ANONYMOUS", // Enable anonymous access
+      identityType: "ANONYMOUS",
     })
 
     const qBusinessIndex = new qbusiness.CfnIndex(this, "QBusinessIndex", {
@@ -106,6 +122,7 @@ export class CatholicCharitiesStack extends cdk.Stack {
       },
     })
 
+    // Web Crawler Role
     const webCrawlerRole = new iam.Role(this, "WebCrawlerRole", {
       assumedBy: new iam.ServicePrincipal("qbusiness.amazonaws.com", {
         conditions: {
@@ -129,6 +146,7 @@ export class CatholicCharitiesStack extends cdk.Stack {
       },
     })
 
+    // Data Source Creator Lambda
     const dataSourceCreatorRole = new iam.Role(this, "DataSourceCreatorRole", {
       assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole")],
@@ -228,14 +246,11 @@ def handler(event, context):
             project_name = event['ResourceProperties']['ProjectName']
             
             logger.info(f"Processing bucket: {bucket_name}")
-            logger.info(f"Application ID: {application_id}")
-            logger.info(f"Index ID: {index_id}")
             
             time.sleep(10)
             
             try:
                 response = s3_client.list_objects_v2(Bucket=bucket_name)
-                logger.info(f"S3 list response: {response}")
             except Exception as e:
                 logger.error(f"Failed to list S3 objects: {str(e)}")
                 send_response(event, context, 'FAILED', reason=f"Failed to list S3 objects: {str(e)}")
@@ -244,10 +259,8 @@ def handler(event, context):
             data_sources = []
             
             if 'Contents' in response:
-                logger.info(f"Found {len(response['Contents'])} objects in S3")
                 for obj in response['Contents']:
                     key = obj['Key']
-                    logger.info(f"Processing S3 object: {key}")
                     if key.endswith('.txt'):
                         file_name = key
                         base_name = file_name.replace('.txt', '')
@@ -256,8 +269,6 @@ def handler(event, context):
                             file_response = s3_client.get_object(Bucket=bucket_name, Key=key)
                             content = file_response['Body'].read().decode('utf-8').strip()
                             urls = [url.strip() for url in content.split('\\n') if url.strip() and not url.strip().startswith('#')]
-                            
-                            logger.info(f"Found {len(urls)} URLs in {file_name}: {urls}")
                             
                             if urls:
                                 data_source_response = qbusiness_client.create_data_source(
@@ -305,17 +316,6 @@ def handler(event, context):
                                 )
                                 
                                 data_source_id = data_source_response['dataSourceId']
-                                
-                                try:
-                                    sync_response = qbusiness_client.start_data_source_sync_job(
-                                        applicationId=application_id,
-                                        dataSourceId=data_source_id,
-                                        indexId=index_id
-                                    )
-                                    logger.info(f"Started sync job for data source {base_name}: {sync_response['executionId']}")
-                                except Exception as sync_error:
-                                    logger.warning(f"Failed to start sync for {base_name}: {str(sync_error)}")
-                                
                                 data_sources.append({
                                     'id': data_source_id,
                                     'name': base_name,
@@ -326,10 +326,6 @@ def handler(event, context):
                         except Exception as e:
                             logger.error(f"Failed to process file {key}: {str(e)}")
                             continue
-            else:
-                logger.warning("No objects found in S3 bucket")
-            
-            logger.info(f"Created {len(data_sources)} data sources total")
             
             send_response(event, context, 'SUCCESS', {
                 'DataSources': json.dumps(data_sources),
@@ -359,10 +355,8 @@ def handler(event, context):
     })
 
     dataSourcesCustomResource.node.addDependency(urlFilesDeployment)
-    dataSourcesCustomResource.node.addDependency(qBusinessApp)
-    dataSourcesCustomResource.node.addDependency(qBusinessIndex)
-    dataSourcesCustomResource.node.addDependency(qBusinessRetriever)
 
+    // Chat Lambda Function
     const lambdaRole = new iam.Role(this, "LambdaExecutionRole", {
       assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole")],
@@ -402,6 +396,7 @@ def handler(event, context):
       description: "Catholic Charities Q Business Chat Handler",
     })
 
+    // API Gateway
     const api = new apigateway.RestApi(this, "ChatAPI", {
       restApiName: `${projectName}-api`,
       description: "Catholic Charities Chatbot API",
@@ -418,15 +413,183 @@ def handler(event, context):
     const healthResource = api.root.addResource("health")
     healthResource.addMethod("GET", lambdaIntegration)
 
-    const frontendBucket = new s3.Bucket(this, "FrontendBuildBucket", {
-      bucketName: `${projectName}-builds-${this.account}-${this.region}`.substring(0, 63),
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-      versioned: false,
-      publicReadAccess: false,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+    // Amplify App (created in CloudFormation, not buildspec)
+    const amplifyApp = new amplify.CfnApp(this, "AmplifyApp", {
+      name: `${projectName}-frontend`,
+      platform: "WEB",
+      environmentVariables: [
+        {
+          name: "REACT_APP_API_BASE_URL",
+          value: api.url,
+        },
+        {
+          name: "REACT_APP_CHAT_ENDPOINT",
+          value: `${api.url}chat`,
+        },
+        {
+          name: "REACT_APP_HEALTH_ENDPOINT",
+          value: `${api.url}health`,
+        },
+      ],
+      customRules: [
+        {
+          source: "/<*>",
+          target: "/index.html",
+          status: "200",
+        },
+      ],
     })
 
+    // Amplify Branch
+    const amplifyBranch = new amplify.CfnBranch(this, "AmplifyBranch", {
+      appId: amplifyApp.attrAppId,
+      branchName: "main",
+      stage: "PRODUCTION",
+      environmentVariables: [
+        {
+          name: "REACT_APP_API_BASE_URL",
+          value: api.url,
+        },
+        {
+          name: "REACT_APP_CHAT_ENDPOINT",
+          value: `${api.url}chat`,
+        },
+        {
+          name: "REACT_APP_HEALTH_ENDPOINT",
+          value: `${api.url}health`,
+        },
+      ],
+    })
+
+    // Lambda function to handle Amplify deployment when build.zip is uploaded
+    const amplifyDeployerRole = new iam.Role(this, "AmplifyDeployerRole", {
+      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+      managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole")],
+      inlinePolicies: {
+        AmplifyAccess: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                "amplify:StartDeployment",
+                "amplify:GetApp",
+                "amplify:GetBranch",
+                "amplify:ListApps",
+                "amplify:ListBranches",
+              ],
+              resources: ["*"],
+            }),
+          ],
+        }),
+        S3Access: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: ["s3:GetObject", "s3:GetObjectVersion"],
+              resources: [`${frontendBucket.bucketArn}/*`],
+            }),
+          ],
+        }),
+      },
+    })
+
+    const amplifyDeployer = new lambda.Function(this, "AmplifyDeployer", {
+      runtime: lambda.Runtime.PYTHON_3_11,
+      handler: "index.handler",
+      code: lambda.Code.fromInline(`
+import boto3
+import json
+import logging
+import urllib.parse
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+amplify_client = boto3.client('amplify')
+
+def handler(event, context):
+    try:
+        logger.info(f"Received event: {json.dumps(event)}")
+        
+        # Parse S3 event
+        for record in event['Records']:
+            if record['eventSource'] == 'aws:s3':
+                bucket_name = record['s3']['bucket']['name']
+                object_key = urllib.parse.unquote_plus(record['s3']['object']['key'])
+                
+                logger.info(f"Processing S3 object: {bucket_name}/{object_key}")
+                
+                # Check if this is a build.zip file
+                if object_key.startswith('builds/') and object_key.endswith('.zip'):
+                    app_id = "${amplifyApp.attrAppId}"
+                    branch_name = "main"
+                    
+                    logger.info(f"Starting Amplify deployment for app {app_id}, branch {branch_name}")
+                    
+                    # Start deployment with S3 source
+                    response = amplify_client.start_deployment(
+                        appId=app_id,
+                        branchName=branch_name,
+                        sourceUrl=f"s3://{bucket_name}/{object_key}"
+                    )
+                    
+                    job_id = response['jobSummary']['jobId']
+                    logger.info(f"Started Amplify deployment with job ID: {job_id}")
+                    
+                    return {
+                        'statusCode': 200,
+                        'body': json.dumps({
+                            'message': 'Deployment started successfully',
+                            'jobId': job_id,
+                            'appId': app_id,
+                            'branchName': branch_name
+                        })
+                    }
+        
+        return {
+            'statusCode': 200,
+            'body': json.dumps({'message': 'No build files to process'})
+        }
+        
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': str(e)})
+        }
+`),
+      timeout: cdk.Duration.minutes(5),
+      role: amplifyDeployerRole,
+      environment: {
+        AMPLIFY_APP_ID: amplifyApp.attrAppId,
+      },
+    })
+
+    // EventBridge rule to trigger deployment when build.zip is uploaded
+    const s3UploadRule = new events.Rule(this, "S3BuildUploadRule", {
+      eventPattern: {
+        source: ["aws.s3"],
+        detailType: ["Object Created"],
+        detail: {
+          bucket: {
+            name: [frontendBucket.bucketName],
+          },
+          object: {
+            key: [{ prefix: "builds/" }, { suffix: ".zip" }],
+          },
+        },
+      },
+    })
+
+    s3UploadRule.addTarget(new targets.LambdaFunction(amplifyDeployer))
+
+    // Grant EventBridge permission to invoke the Lambda
+    amplifyDeployer.addPermission("AllowEventBridgeInvoke", {
+      principal: new iam.ServicePrincipal("events.amazonaws.com"),
+      sourceArn: s3UploadRule.ruleArn,
+    })
+
+    // Outputs
     new cdk.CfnOutput(this, "QBusinessApplicationId", {
       value: qBusinessApp.attrApplicationId,
       description: "Q Business Application ID",
@@ -470,6 +633,16 @@ def handler(event, context):
     new cdk.CfnOutput(this, "FrontendBuildBucketName", {
       value: frontendBucket.bucketName,
       description: "S3 Bucket for Frontend Build Artifacts",
+    })
+
+    new cdk.CfnOutput(this, "AmplifyAppId", {
+      value: amplifyApp.attrAppId,
+      description: "Amplify App ID",
+    })
+
+    new cdk.CfnOutput(this, "AmplifyAppURL", {
+      value: `https://main.${amplifyApp.attrAppId}.amplifyapp.com`,
+      description: "Amplify App URL",
     })
   }
 }
