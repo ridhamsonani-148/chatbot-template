@@ -83,9 +83,6 @@ export class CatholicCharitiesStack extends cdk.Stack {
       description: "Catholic Charities AI Assistant Q Business Application",
       roleArn: applicationRole.roleArn,
       identityType: "ANONYMOUS", // Enable anonymous access
-      attachmentsConfiguration: {
-        attachmentsControlMode: "ENABLED",
-      }
     })
 
     const qBusinessIndex = new qbusiness.CfnIndex(this, "QBusinessIndex", {
