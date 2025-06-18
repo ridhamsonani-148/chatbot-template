@@ -19,15 +19,8 @@ phases:
   build:
     commands:
       - |
-        if [ "$ACTION" = "destroy" ]; then
-          # Clean up Amplify app first
-          AMPLIFY_APP_ID=$(aws amplify list-apps --query "apps[?name=='${PROJECT_NAME}-frontend'].appId" --output text 2>/dev/null || echo "")
-          if [ -n "$AMPLIFY_APP_ID" ] && [ "$AMPLIFY_APP_ID" != "None" ]; then
-            echo "Deleting Amplify app: $AMPLIFY_APP_ID"
-            aws amplify delete-app --app-id "$AMPLIFY_APP_ID" || echo "Failed to delete Amplify app"
-          fi
-          
-          # Then destroy CDK stack
+        if [ "$ACTION" = "destroy" ]; then          
+          # destroy CDK stack
           cdk destroy CatholicCharitiesStack --force \
             --context githubOwner="$GITHUB_OWNER" \
             --context githubRepo="$GITHUB_REPO" \
