@@ -13,7 +13,6 @@ export interface CatholicCharitiesStackProps extends cdk.StackProps {
   readonly githubToken: string
   readonly projectName?: string
   readonly urlFilesPath?: string
-  readonly identityCenterInstanceArn?: string
 }
 
 export class CatholicCharitiesStack extends cdk.Stack {
@@ -23,114 +22,6 @@ export class CatholicCharitiesStack extends cdk.Stack {
     const projectName = props.projectName || "catholic-charities-chatbot"
     const urlFilesPath = props.urlFilesPath || "data-sources"
 
-    // Handle Identity Center ARN
-    let identityCenterInstanceArn: string
-
-    if (props.identityCenterInstanceArn) {
-      identityCenterInstanceArn = props.identityCenterInstanceArn
-    } else {
-      // Create a custom resource to dynamically find Identity Center ARN
-      const identityCenterFinder = new lambda.Function(this, "IdentityCenterFinder", {
-        runtime: lambda.Runtime.PYTHON_3_11,
-        handler: "index.handler",
-        code: lambda.Code.fromInline(`
-import boto3
-import json
-import logging
-import urllib3
-
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-def send_response(event, context, response_status, response_data=None, physical_resource_id=None, reason=None):
-    if response_data is None:
-        response_data = {}
-    
-    response_url = event['ResponseURL']
-    response_body = {
-        'Status': response_status,
-        'Reason': reason or f'See CloudWatch Log Stream: {context.log_stream_name}',
-        'PhysicalResourceId': physical_resource_id or context.log_stream_name,
-        'StackId': event['StackId'],
-        'RequestId': event['RequestId'],
-        'LogicalResourceId': event['LogicalResourceId'],
-        'Data': response_data
-    }
-    
-    json_response_body = json.dumps(response_body)
-    headers = {
-        'content-type': '',
-        'content-length': str(len(json_response_body))
-    }
-    
-    try:
-        http = urllib3.PoolManager()
-        response = http.request('PUT', response_url, body=json_response_body, headers=headers)
-        logger.info(f"CloudFormation response sent successfully: {response.status}")
-    except Exception as e:
-        logger.error(f"Failed to send response to CloudFormation: {str(e)}")
-
-def handler(event, context):
-    try:
-        request_type = event['RequestType']
-        
-        if request_type == 'Create' or request_type == 'Update':
-            sso_client = boto3.client('sso-admin')
-            
-            try:
-                response = sso_client.list_instances()
-                instances = response.get('Instances', [])
-                
-                if not instances:
-                    send_response(event, context, 'FAILED', reason='No IAM Identity Center instance found. Please enable Identity Center or provide the organization Identity Center ARN.')
-                    return
-                
-                instance_arn = instances[0]['InstanceArn']
-                
-                if len(instances) > 1:
-                    logger.warning(f"Multiple Identity Center instances found. Using: {instance_arn}")
-                
-                send_response(event, context, 'SUCCESS', {
-                    'InstanceArn': instance_arn
-                }, 'identity-center-finder')
-                
-            except Exception as e:
-                logger.error(f"Error finding Identity Center: {str(e)}")
-                send_response(event, context, 'FAILED', reason=f'Failed to find Identity Center: {str(e)}. Please provide the organization Identity Center ARN as a parameter.')
-        
-        elif request_type == 'Delete':
-            send_response(event, context, 'SUCCESS', {}, event['PhysicalResourceId'])
-            
-    except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        send_response(event, context, 'FAILED', reason=str(e))
-`),
-        timeout: cdk.Duration.minutes(2),
-        role: new iam.Role(this, "IdentityCenterFinderRole", {
-          assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
-          managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole")],
-          inlinePolicies: {
-            SSOAccess: new iam.PolicyDocument({
-              statements: [
-                new iam.PolicyStatement({
-                  effect: iam.Effect.ALLOW,
-                  actions: ["sso:ListInstances", "sso-admin:ListInstances"],
-                  resources: ["*"],
-                }),
-              ],
-            }),
-          },
-        }),
-      })
-
-      const identityCenterCustomResource = new cdk.CustomResource(this, "IdentityCenterCustomResource", {
-        serviceToken: identityCenterFinder.functionArn,
-      })
-
-      identityCenterInstanceArn = identityCenterCustomResource.getAttString("InstanceArn")
-    }
-
-    // S3 Bucket for data sources (direct upload, no url-sources folder)
     const dataBucket = new s3.Bucket(this, "DataSourceBucket", {
       bucketName: `${projectName}-data-${this.account}-${this.region}`.substring(0, 63),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -140,14 +31,12 @@ def handler(event, context):
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
     })
 
-    // Deploy URL files directly to S3 root (no url-sources prefix)
     const urlFilesDeployment = new s3deploy.BucketDeployment(this, "DeployUrlFiles", {
       sources: [s3deploy.Source.asset(`./${urlFilesPath}`)],
       destinationBucket: dataBucket,
       include: ["*.txt"],
     })
 
-    // IAM Role for Q Business Application
     const applicationRole = new iam.Role(this, "QBusinessApplicationRole", {
       assumedBy: new iam.ServicePrincipal("qbusiness.amazonaws.com", {
         conditions: {
@@ -188,22 +77,19 @@ def handler(event, context):
       },
     })
 
-    // Q Business Application with PUBLIC access (no Identity Center required for end users)
     const qBusinessApp = new qbusiness.CfnApplication(this, "QBusinessApplication", {
       displayName: `${projectName}-app`,
       description: "Catholic Charities AI Assistant Q Business Application",
       roleArn: applicationRole.roleArn,
-      identityCenterInstanceArn: identityCenterInstanceArn,
+      identityType: "ANONYMOUS", // Enable anonymous access
       attachmentsConfiguration: {
         attachmentsControlMode: "ENABLED",
       },
-      // Enable public access - no authentication required for end users
       qAppsConfiguration: {
         qAppsControlMode: "ENABLED",
       },
     })
 
-    // Q Business Index
     const qBusinessIndex = new qbusiness.CfnIndex(this, "QBusinessIndex", {
       applicationId: qBusinessApp.attrApplicationId,
       displayName: `${projectName}-index`,
@@ -214,7 +100,6 @@ def handler(event, context):
       },
     })
 
-    // Q Business Retriever
     const qBusinessRetriever = new qbusiness.CfnRetriever(this, "QBusinessRetriever", {
       applicationId: qBusinessApp.attrApplicationId,
       displayName: `${projectName}-retriever`,
@@ -226,7 +111,6 @@ def handler(event, context):
       },
     })
 
-    // IAM Role for Web Crawler Data Source
     const webCrawlerRole = new iam.Role(this, "WebCrawlerRole", {
       assumedBy: new iam.ServicePrincipal("qbusiness.amazonaws.com", {
         conditions: {
@@ -250,7 +134,6 @@ def handler(event, context):
       },
     })
 
-    // Data Source Creator Lambda
     const dataSourceCreatorRole = new iam.Role(this, "DataSourceCreatorRole", {
       assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole")],
@@ -353,10 +236,8 @@ def handler(event, context):
             logger.info(f"Application ID: {application_id}")
             logger.info(f"Index ID: {index_id}")
             
-            # Wait for S3 deployment to complete
             time.sleep(10)
             
-            # List all .txt files in the bucket root
             try:
                 response = s3_client.list_objects_v2(Bucket=bucket_name)
                 logger.info(f"S3 list response: {response}")
@@ -377,7 +258,6 @@ def handler(event, context):
                         base_name = file_name.replace('.txt', '')
                         
                         try:
-                            # Read URLs from the file
                             file_response = s3_client.get_object(Bucket=bucket_name, Key=key)
                             content = file_response['Body'].read().decode('utf-8').strip()
                             urls = [url.strip() for url in content.split('\\n') if url.strip() and not url.strip().startswith('#')]
@@ -385,7 +265,6 @@ def handler(event, context):
                             logger.info(f"Found {len(urls)} URLs in {file_name}: {urls}")
                             
                             if urls:
-                                # Create Q Business data source with simplified configuration
                                 data_source_response = qbusiness_client.create_data_source(
                                     applicationId=application_id,
                                     indexId=index_id,
@@ -420,8 +299,8 @@ def handler(event, context):
                                         'additionalProperties': {
                                             'rateLimit': '300',
                                             'maxFileSize': '50',
-                                            'crawlDepth': '2',  # Allow some depth for better content
-                                            'maxLinksPerUrl': '100',  # Allow following some links
+                                            'crawlDepth': '2',
+                                            'maxLinksPerUrl': '100',
                                             'crawlSubDomain': True,
                                             'crawlAllDomain': False,
                                             'honorRobots': True,
@@ -432,7 +311,6 @@ def handler(event, context):
                                 
                                 data_source_id = data_source_response['dataSourceId']
                                 
-                                # Start sync job immediately
                                 try:
                                     sync_response = qbusiness_client.start_data_source_sync_job(
                                         applicationId=application_id,
@@ -474,7 +352,6 @@ def handler(event, context):
       role: dataSourceCreatorRole,
     })
 
-    // Custom resource to create data sources
     const dataSourcesCustomResource = new cdk.CustomResource(this, "DataSourcesCustomResource", {
       serviceToken: dataSourceCreator.functionArn,
       properties: {
@@ -486,13 +363,11 @@ def handler(event, context):
       },
     })
 
-    // Ensure proper dependencies
     dataSourcesCustomResource.node.addDependency(urlFilesDeployment)
     dataSourcesCustomResource.node.addDependency(qBusinessApp)
     dataSourcesCustomResource.node.addDependency(qBusinessIndex)
     dataSourcesCustomResource.node.addDependency(qBusinessRetriever)
 
-    // Lambda Execution Role for Chat API with FULL Q Business permissions
     const lambdaRole = new iam.Role(this, "LambdaExecutionRole", {
       assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole")],
@@ -511,14 +386,13 @@ def handler(event, context):
                 "qbusiness:GetIndex",
                 "qbusiness:ListIndices",
               ],
-              resources: ["*"], // Allow access to all Q Business resources
+              resources: ["*"],
             }),
           ],
         }),
       },
     })
 
-    // Lambda Function for Chat API
     const chatLambda = new lambda.Function(this, "ChatLambdaFunction", {
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: "lambda_function.lambda_handler",
@@ -533,7 +407,6 @@ def handler(event, context):
       description: "Catholic Charities Q Business Chat Handler",
     })
 
-    // API Gateway
     const api = new apigateway.RestApi(this, "ChatAPI", {
       restApiName: `${projectName}-api`,
       description: "Catholic Charities Chatbot API",
@@ -544,17 +417,12 @@ def handler(event, context):
       },
     })
 
-    // API Gateway Integration
     const lambdaIntegration = new apigateway.LambdaIntegration(chatLambda)
-
-    // API Routes
     const chatResource = api.root.addResource("chat")
     chatResource.addMethod("POST", lambdaIntegration)
-
     const healthResource = api.root.addResource("health")
     healthResource.addMethod("GET", lambdaIntegration)
 
-    // S3 Bucket for Frontend Build Artifacts
     const frontendBucket = new s3.Bucket(this, "FrontendBuildBucket", {
       bucketName: `${projectName}-builds-${this.account}-${this.region}`.substring(0, 63),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -564,265 +432,6 @@ def handler(event, context):
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
     })
 
-    // Amplify Deployment Lambda
-    const amplifyDeploymentRole = new iam.Role(this, "AmplifyDeploymentRole", {
-      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
-      managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole")],
-      inlinePolicies: {
-        AmplifyAccess: new iam.PolicyDocument({
-          statements: [
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: [
-                "amplify:CreateApp",
-                "amplify:UpdateApp",
-                "amplify:GetApp",
-                "amplify:ListApps",
-                "amplify:CreateBranch",
-                "amplify:UpdateBranch",
-                "amplify:GetBranch",
-                "amplify:ListBranches",
-                "amplify:StartDeployment",
-                "amplify:GetDeployment",
-                "amplify:ListDeployments",
-                "amplify:CreateDeployment",
-              ],
-              resources: ["*"],
-            }),
-          ],
-        }),
-        S3Access: new iam.PolicyDocument({
-          statements: [
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"],
-              resources: [frontendBucket.bucketArn, `${frontendBucket.bucketArn}/*`],
-            }),
-          ],
-        }),
-      },
-    })
-
-    const amplifyDeploymentLambda = new lambda.Function(this, "AmplifyDeploymentLambda", {
-      runtime: lambda.Runtime.PYTHON_3_11,
-      handler: "index.handler",
-      code: lambda.Code.fromInline(`
-import boto3
-import json
-import logging
-import urllib3
-import time
-
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-amplify_client = boto3.client('amplify')
-s3_client = boto3.client('s3')
-
-def send_response(event, context, response_status, response_data=None, physical_resource_id=None, reason=None):
-    if response_data is None:
-        response_data = {}
-    
-    response_url = event['ResponseURL']
-    response_body = {
-        'Status': response_status,
-        'Reason': reason or f'See CloudWatch Log Stream: {context.log_stream_name}',
-        'PhysicalResourceId': physical_resource_id or context.log_stream_name,
-        'StackId': event['StackId'],
-        'RequestId': event['RequestId'],
-        'LogicalResourceId': event['LogicalResourceId'],
-        'Data': response_data
-    }
-    
-    json_response_body = json.dumps(response_body)
-    headers = {
-        'content-type': '',
-        'content-length': str(len(json_response_body))
-    }
-    
-    try:
-        http = urllib3.PoolManager()
-        response = http.request('PUT', response_url, body=json_response_body, headers=headers)
-        logger.info(f"CloudFormation response sent successfully: {response.status}")
-    except Exception as e:
-        logger.error(f"Failed to send response to CloudFormation: {str(e)}")
-
-def handler(event, context):
-    try:
-        request_type = event['RequestType']
-        logger.info(f"Request type: {request_type}")
-        
-        if request_type == 'Create' or request_type == 'Update':
-            project_name = event['ResourceProperties']['ProjectName']
-            api_url = event['ResourceProperties']['ApiUrl']
-            build_bucket = event['ResourceProperties']['BuildBucket']
-            build_key = event['ResourceProperties']['BuildKey']
-            
-            app_name = f"{project_name}-frontend"
-            
-            logger.info(f"Creating/updating Amplify app: {app_name}")
-            logger.info(f"API URL: {api_url}")
-            logger.info(f"Build artifact: s3://{build_bucket}/{build_key}")
-            
-            # Check if app exists
-            app_id = None
-            try:
-                apps_response = amplify_client.list_apps()
-                for app in apps_response.get('apps', []):
-                    if app['name'] == app_name:
-                        app_id = app['appId']
-                        logger.info(f"Found existing Amplify app: {app_id}")
-                        break
-            except Exception as e:
-                logger.warning(f"Error listing apps: {str(e)}")
-            
-            # Create app if it doesn't exist
-            if not app_id:
-                logger.info("Creating new Amplify app...")
-                try:
-                    create_response = amplify_client.create_app(
-                        name=app_name,
-                        description="Catholic Charities Chatbot Frontend - Deployed via Build Artifact",
-                        platform='WEB',
-                        environmentVariables={
-                            'REACT_APP_API_BASE_URL': api_url,
-                            'REACT_APP_CHAT_ENDPOINT': f"{api_url}chat",
-                            'REACT_APP_HEALTH_ENDPOINT': f"{api_url}health",
-                        }
-                    )
-                    app_id = create_response['app']['appId']
-                    logger.info(f"Created Amplify app: {app_id}")
-                except Exception as e:
-                    logger.error(f"Failed to create Amplify app: {str(e)}")
-                    send_response(event, context, 'FAILED', reason=f"Failed to create Amplify app: {str(e)}")
-                    return
-            else:
-                # Update existing app environment variables
-                try:
-                    amplify_client.update_app(
-                        appId=app_id,
-                        environmentVariables={
-                            'REACT_APP_API_BASE_URL': api_url,
-                            'REACT_APP_CHAT_ENDPOINT': f"{api_url}chat",
-                            'REACT_APP_HEALTH_ENDPOINT': f"{api_url}health",
-                        }
-                    )
-                    logger.info(f"Updated Amplify app environment variables: {app_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to update app environment variables: {str(e)}")
-            
-            # Check if main branch exists
-            branch_exists = False
-            try:
-                branches_response = amplify_client.list_branches(appId=app_id)
-                for branch in branches_response.get('branches', []):
-                    if branch['branchName'] == 'main':
-                        branch_exists = True
-                        logger.info("Found existing main branch")
-                        break
-            except Exception as e:
-                logger.warning(f"Error listing branches: {str(e)}")
-            
-            # Create main branch if it doesn't exist
-            if not branch_exists:
-                try:
-                    amplify_client.create_branch(
-                        appId=app_id,
-                        branchName='main',
-                        description='Main production branch',
-                        stage='PRODUCTION',
-                        enableAutoBuild=False,
-                        environmentVariables={
-                            'REACT_APP_API_BASE_URL': api_url,
-                            'REACT_APP_CHAT_ENDPOINT': f"{api_url}chat",
-                            'REACT_APP_HEALTH_ENDPOINT': f"{api_url}health",
-                        }
-                    )
-                    logger.info("Created main branch")
-                except Exception as e:
-                    logger.warning(f"Failed to create main branch: {str(e)}")
-            
-            # Wait a moment for branch to be ready
-            time.sleep(5)
-            
-            # Start deployment with build artifact
-            try:
-                deployment_response = amplify_client.start_deployment(
-                    appId=app_id,
-                    branchName='main',
-                    sourceUrl=f"s3://{build_bucket}/{build_key}"
-                )
-                
-                deployment_id = deployment_response['jobSummary']['jobId']
-                logger.info(f"Started deployment: {deployment_id}")
-                
-                # Wait for deployment to complete (with timeout)
-                max_wait_time = 600  # 10 minutes
-                wait_time = 0
-                deployment_status = 'PENDING'
-                
-                while wait_time < max_wait_time and deployment_status in ['PENDING', 'RUNNING']:
-                    time.sleep(30)
-                    wait_time += 30
-                    
-                    try:
-                        job_response = amplify_client.get_job(
-                            appId=app_id,
-                            branchName='main',
-                            jobId=deployment_id
-                        )
-                        deployment_status = job_response['job']['summary']['status']
-                        logger.info(f"Deployment status: {deployment_status}")
-                    except Exception as e:
-                        logger.warning(f"Failed to get deployment status: {str(e)}")
-                        break
-                
-                # Get app details for URL
-                app_response = amplify_client.get_app(appId=app_id)
-                default_domain = app_response['app']['defaultDomain']
-                app_url = f"https://main.{default_domain}"
-                
-                response_data = {
-                    'AppId': app_id,
-                    'AppUrl': app_url,
-                    'DeploymentId': deployment_id,
-                    'DeploymentStatus': deployment_status
-                }
-                
-                if deployment_status == 'SUCCEED':
-                    logger.info(f"Deployment completed successfully. App URL: {app_url}")
-                    send_response(event, context, 'SUCCESS', response_data, f"amplify-app-{app_id}")
-                else:
-                    logger.warning(f"Deployment completed with status: {deployment_status}")
-                    send_response(event, context, 'SUCCESS', response_data, f"amplify-app-{app_id}")
-                
-            except Exception as e:
-                logger.error(f"Failed to start deployment: {str(e)}")
-                # Still return success with app info, deployment can be retried manually
-                app_response = amplify_client.get_app(appId=app_id)
-                default_domain = app_response['app']['defaultDomain']
-                app_url = f"https://main.{default_domain}"
-                
-                response_data = {
-                    'AppId': app_id,
-                    'AppUrl': app_url,
-                    'DeploymentError': str(e)
-                }
-                send_response(event, context, 'SUCCESS', response_data, f"amplify-app-{app_id}")
-        
-        elif request_type == 'Delete':
-            # Optionally delete the Amplify app
-            send_response(event, context, 'SUCCESS', {}, event.get('PhysicalResourceId', 'deleted'))
-            
-    except Exception as e:
-        logger.error(f"Error: {str(e)}")
-        send_response(event, context, 'FAILED', reason=str(e))
-`),
-      timeout: cdk.Duration.minutes(15),
-      role: amplifyDeploymentRole,
-    })
-
-    // Outputs
     new cdk.CfnOutput(this, "QBusinessApplicationId", {
       value: qBusinessApp.attrApplicationId,
       description: "Q Business Application ID",
@@ -866,16 +475,6 @@ def handler(event, context):
     new cdk.CfnOutput(this, "FrontendBuildBucketName", {
       value: frontendBucket.bucketName,
       description: "S3 Bucket for Frontend Build Artifacts",
-    })
-
-    new cdk.CfnOutput(this, "AmplifyDeploymentLambdaARN", {
-      value: amplifyDeploymentLambda.functionArn,
-      description: "Lambda Function ARN for Amplify Deployment",
-    })
-
-    new cdk.CfnOutput(this, "IdentityCenterInstanceARN", {
-      value: identityCenterInstanceArn,
-      description: "Identity Center Instance ARN used",
     })
   }
 }
