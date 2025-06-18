@@ -43,7 +43,7 @@ export class CatholicCharitiesStack extends cdk.Stack {
       versioned: false,
       publicReadAccess: false,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      eventBridgeEnabled: true, // Enable EventBridge for S3 events
+      eventBridgeEnabled: true,
     })
 
     // Deploy URL files to S3
@@ -461,7 +461,7 @@ def handler(event, context):
       ],
     })
 
-    // Lambda function to handle Amplify deployment when build.zip is uploaded
+    // FIXED: Lambda function to handle EventBridge events (not S3 direct events)
     const amplifyDeployerRole = new iam.Role(this, "AmplifyDeployerRole", {
       assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole")],
@@ -500,7 +500,6 @@ def handler(event, context):
 import boto3
 import json
 import logging
-import urllib.parse
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -509,50 +508,55 @@ amplify_client = boto3.client('amplify')
 
 def handler(event, context):
     try:
-        logger.info(f"Received event: {json.dumps(event)}")
+        logger.info(f"Received EventBridge event: {json.dumps(event)}")
         
-        # Parse S3 event
-        for record in event['Records']:
-            if record['eventSource'] == 'aws:s3':
-                bucket_name = record['s3']['bucket']['name']
-                object_key = urllib.parse.unquote_plus(record['s3']['object']['key'])
+        # Handle EventBridge event format (not S3 direct event)
+        if event.get('source') == 'aws.s3' and event.get('detail-type') == 'Object Created':
+            detail = event.get('detail', {})
+            bucket_name = detail.get('bucket', {}).get('name')
+            object_key = detail.get('object', {}).get('key')
+            
+            logger.info(f"Processing S3 object: {bucket_name}/{object_key}")
+            
+            # Check if this is a build.zip file
+            if object_key and object_key.startswith('builds/') and object_key.endswith('.zip'):
+                app_id = "${amplifyApp.attrAppId}"
+                branch_name = "main"
                 
-                logger.info(f"Processing S3 object: {bucket_name}/{object_key}")
+                logger.info(f"Starting Amplify deployment for app {app_id}, branch {branch_name}")
                 
-                # Check if this is a build.zip file
-                if object_key.startswith('builds/') and object_key.endswith('.zip'):
-                    app_id = "${amplifyApp.attrAppId}"
-                    branch_name = "main"
-                    
-                    logger.info(f"Starting Amplify deployment for app {app_id}, branch {branch_name}")
-                    
-                    # Start deployment with S3 source
-                    response = amplify_client.start_deployment(
-                        appId=app_id,
-                        branchName=branch_name,
-                        sourceUrl=f"s3://{bucket_name}/{object_key}"
-                    )
-                    
-                    job_id = response['jobSummary']['jobId']
-                    logger.info(f"Started Amplify deployment with job ID: {job_id}")
-                    
-                    return {
-                        'statusCode': 200,
-                        'body': json.dumps({
-                            'message': 'Deployment started successfully',
-                            'jobId': job_id,
-                            'appId': app_id,
-                            'branchName': branch_name
-                        })
-                    }
+                # Start deployment with S3 source
+                response = amplify_client.start_deployment(
+                    appId=app_id,
+                    branchName=branch_name,
+                    sourceUrl=f"s3://{bucket_name}/{object_key}"
+                )
+                
+                job_id = response['jobSummary']['jobId']
+                logger.info(f"✅ Started Amplify deployment with job ID: {job_id}")
+                
+                return {
+                    'statusCode': 200,
+                    'body': json.dumps({
+                        'message': 'Deployment started successfully',
+                        'jobId': job_id,
+                        'appId': app_id,
+                        'branchName': branch_name,
+                        'sourceUrl': f"s3://{bucket_name}/{object_key}"
+                    })
+                }
+            else:
+                logger.info(f"Skipping non-build file: {object_key}")
+        else:
+            logger.info(f"Skipping non-S3 event: {event.get('source')}")
         
         return {
             'statusCode': 200,
-            'body': json.dumps({'message': 'No build files to process'})
+            'body': json.dumps({'message': 'Event processed, no action needed'})
         }
         
     except Exception as e:
-        logger.error(f"Error: {str(e)}")
+        logger.error(f"❌ Error: {str(e)}")
         return {
             'statusCode': 500,
             'body': json.dumps({'error': str(e)})
