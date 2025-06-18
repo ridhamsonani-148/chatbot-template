@@ -45,6 +45,36 @@ export class CatholicCharitiesStack extends cdk.Stack {
       eventBridgeEnabled: true, // Enable EventBridge notifications
     })
 
+    // Add bucket policy to allow Amplify service access
+    frontendBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: "AllowAmplifyServiceAccess",
+        effect: iam.Effect.ALLOW,
+        principals: [new iam.ServicePrincipal("amplify.amazonaws.com")],
+        actions: [
+          "s3:GetObject",
+          "s3:GetObjectAcl",
+          "s3:GetObjectVersion",
+          "s3:GetObjectVersionAcl",
+          "s3:PutObjectAcl",
+          "s3:PutObjectVersionAcl",
+          "s3:ListBucket",
+          "s3:GetBucketAcl",
+          "s3:GetBucketLocation",
+          "s3:GetBucketVersioning",
+          "s3:GetBucketPolicy",
+          "s3:GetBucketPolicyStatus",
+          "s3:GetBucketPublicAccessBlock",
+          "s3:GetEncryptionConfiguration",
+        ],
+        resources: [`${frontendBucket.bucketArn}/*`, frontendBucket.bucketArn],
+        conditions: {
+          StringEquals: {
+            "aws:SourceAccount": this.account,
+          },
+        },
+      }),
+    )
     // Deploy URL files to S3
     const urlFilesDeployment = new s3deploy.BucketDeployment(this, "DeployUrlFiles", {
       sources: [s3deploy.Source.asset(`./${urlFilesPath}`)],
