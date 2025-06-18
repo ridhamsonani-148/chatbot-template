@@ -4,32 +4,32 @@ import * as lambda from "aws-cdk-lib/aws-lambda"
 import * as apigateway from "aws-cdk-lib/aws-apigateway"
 import * as iam from "aws-cdk-lib/aws-iam"
 import * as qbusiness from "aws-cdk-lib/aws-qbusiness"
+import * as s3deploy from "aws-cdk-lib/aws-s3-deployment"
 import * as events from "aws-cdk-lib/aws-events"
 import * as targets from "aws-cdk-lib/aws-events-targets"
 import type { Construct } from "constructs"
 
 export interface CatholicCharitiesStackProps extends cdk.StackProps {
-  readonly githubOwner: string
-  readonly githubRepo: string
+  readonly githubUrl?: string
   readonly projectName?: string
   readonly urlFilesPath?: string
   readonly amplifyAppName?: string
   readonly amplifyBranchName?: string
+  
 }
 
 export class CatholicCharitiesStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: CatholicCharitiesStackProps) {
     super(scope, id, props)
 
-    const projectName = props.projectName || "catholic-charities-chatbot"
-    const urlFilesPath = props.urlFilesPath || "data-sources"
-    const amplifyAppName = props.amplifyAppName || `${projectName}-frontend`
-    const amplifyBranchName = props.amplifyBranchName || "main"
+    const projectName = props.projectName
+    const urlFilesPath = props.urlFilesPath
 
-    // S3 Buckets (simplified - no auto-delete to reduce Lambda functions)
+    // S3 Buckets
     const dataBucket = new s3.Bucket(this, "DataSourceBucket", {
       bucketName: `${projectName}-data-${this.account}-${this.region}`.substring(0, 63),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
       versioned: false,
       publicReadAccess: false,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
@@ -38,13 +38,13 @@ export class CatholicCharitiesStack extends cdk.Stack {
     const frontendBucket = new s3.Bucket(this, "FrontendBuildBucket", {
       bucketName: `${projectName}-builds-${this.account}-${this.region}`.substring(0, 63),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
       versioned: false,
       publicReadAccess: false,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       eventBridgeEnabled: true,
     })
 
-    // Add bucket policy to allow Amplify service access
     frontendBucket.addToResourcePolicy(
       new iam.PolicyStatement({
         sid: "AllowAmplifyServiceAccess",
@@ -54,9 +54,17 @@ export class CatholicCharitiesStack extends cdk.Stack {
           "s3:GetObject",
           "s3:GetObjectAcl",
           "s3:GetObjectVersion",
+          "s3:GetObjectVersionAcl",
+          "s3:PutObjectAcl",
+          "s3:PutObjectVersionAcl",
           "s3:ListBucket",
           "s3:GetBucketAcl",
           "s3:GetBucketLocation",
+          "s3:GetBucketVersioning",
+          "s3:GetBucketPolicy",
+          "s3:GetBucketPolicyStatus",
+          "s3:GetBucketPublicAccessBlock",
+          "s3:GetEncryptionConfiguration",
         ],
         resources: [`${frontendBucket.bucketArn}/*`, frontendBucket.bucketArn],
         conditions: {
@@ -67,7 +75,12 @@ export class CatholicCharitiesStack extends cdk.Stack {
       }),
     )
 
-    // Q Business Application Setup
+    const urlFilesDeployment = new s3deploy.BucketDeployment(this, "DeployUrlFiles", {
+      sources: [s3deploy.Source.asset(`./${urlFilesPath}`)],
+      destinationBucket: dataBucket,
+      include: ["*.txt"],
+    })
+
     const applicationRole = new iam.Role(this, "QBusinessApplicationRole", {
       assumedBy: new iam.ServicePrincipal("qbusiness.amazonaws.com", {
         conditions: {
@@ -136,7 +149,6 @@ export class CatholicCharitiesStack extends cdk.Stack {
       },
     })
 
-    // Web Crawler Role
     const webCrawlerRole = new iam.Role(this, "WebCrawlerRole", {
       assumedBy: new iam.ServicePrincipal("qbusiness.amazonaws.com", {
         conditions: {
@@ -160,7 +172,215 @@ export class CatholicCharitiesStack extends cdk.Stack {
       },
     })
 
-    // LAMBDA 1: Chat Lambda Function (Essential)
+    const dataSourceCreatorRole = new iam.Role(this, "DataSourceCreatorRole", {
+      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+      managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole")],
+      inlinePolicies: {
+        S3Access: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: ["s3:GetObject", "s3:ListBucket"],
+              resources: [dataBucket.bucketArn, `${dataBucket.bucketArn}/*`],
+            }),
+          ],
+        }),
+        QBusinessAccess: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                "qbusiness:CreateDataSource",
+                "qbusiness:DeleteDataSource",
+                "qbusiness:UpdateDataSource",
+                "qbusiness:ListDataSources",
+                "qbusiness:StartDataSourceSyncJob",
+                "qbusiness:StopDataSourceSyncJob",
+                "qbusiness:ListDataSourceSyncJobs",
+              ],
+              resources: ["*"],
+            }),
+          ],
+        }),
+        PassRolePolicy: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: ["iam:PassRole"],
+              resources: [webCrawlerRole.roleArn],
+            }),
+          ],
+        }),
+      },
+    })
+
+    const dataSourceCreator = new lambda.Function(this, "DataSourceCreator", {
+      runtime: lambda.Runtime.PYTHON_3_11,
+      handler: "index.handler",
+      code: lambda.Code.fromInline(`
+import boto3
+import json
+import logging
+import time
+import urllib3
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+s3_client = boto3.client('s3')
+qbusiness_client = boto3.client('qbusiness')
+
+def send_response(event, context, response_status, response_data=None, physical_resource_id=None, reason=None):
+    if response_data is None:
+        response_data = {}
+    
+    response_url = event['ResponseURL']
+    response_body = {
+        'Status': response_status,
+        'Reason': reason or f'See CloudWatch Log Stream: {context.log_stream_name}',
+        'PhysicalResourceId': physical_resource_id or context.log_stream_name,
+        'StackId': event['StackId'],
+        'RequestId': event['RequestId'],
+        'LogicalResourceId': event['LogicalResourceId'],
+        'Data': response_data
+    }
+    
+    json_response_body = json.dumps(response_body)
+    headers = {
+        'content-type': '',
+        'content-length': str(len(json_response_body))
+    }
+    
+    try:
+        http = urllib3.PoolManager()
+        response = http.request('PUT', response_url, body=json_response_body, headers=headers)
+        logger.info(f"CloudFormation response sent successfully: {response.status}")
+    except Exception as e:
+        logger.error(f"Failed to send response to CloudFormation: {str(e)}")
+
+def handler(event, context):
+    try:
+        request_type = event['RequestType']
+        logger.info(f"Request type: {request_type}")
+        
+        if request_type == 'Create' or request_type == 'Update':
+            bucket_name = event['ResourceProperties']['BucketName']
+            application_id = event['ResourceProperties']['ApplicationId']
+            index_id = event['ResourceProperties']['IndexId']
+            web_crawler_role_arn = event['ResourceProperties']['WebCrawlerRoleArn']
+            project_name = event['ResourceProperties']['ProjectName']
+            
+            logger.info(f"Processing bucket: {bucket_name}")
+            
+            time.sleep(10)
+            
+            try:
+                response = s3_client.list_objects_v2(Bucket=bucket_name)
+            except Exception as e:
+                logger.error(f"Failed to list S3 objects: {str(e)}")
+                send_response(event, context, 'FAILED', reason=f"Failed to list S3 objects: {str(e)}")
+                return
+            
+            data_sources = []
+            
+            if 'Contents' in response:
+                for obj in response['Contents']:
+                    key = obj['Key']
+                    if key.endswith('.txt'):
+                        file_name = key
+                        base_name = file_name.replace('.txt', '')
+                        
+                        try:
+                            file_response = s3_client.get_object(Bucket=bucket_name, Key=key)
+                            content = file_response['Body'].read().decode('utf-8').strip()
+                            urls = [url.strip() for url in content.split('\\n') if url.strip() and not url.strip().startswith('#')]
+                            
+                            if urls:
+                                data_source_response = qbusiness_client.create_data_source(
+                                    applicationId=application_id,
+                                    indexId=index_id,
+                                    displayName=f"{project_name}-{base_name}",
+                                    description=f"Web crawler for {base_name} URLs",
+                                    roleArn=web_crawler_role_arn,
+                                    configuration={
+                                        'type': 'WEBCRAWLERV2',
+                                        'syncMode': 'FORCED_FULL_CRAWL',
+                                        'connectionConfiguration': {
+                                            'repositoryEndpointMetadata': {
+                                                'authentication': 'NoAuthentication',
+                                                'seedUrlConnections': [{'seedUrl': url} for url in urls],
+                                            },
+                                        },
+                                        'repositoryConfigurations': {
+                                            'webPage': {
+                                                'fieldMappings': [
+                                                    {
+                                                        'indexFieldName': '_source_uri',
+                                                        'indexFieldType': 'STRING',
+                                                        'dataSourceFieldName': 'sourceUrl',
+                                                    },
+                                                    {
+                                                        'indexFieldName': '_document_title',
+                                                        'indexFieldType': 'STRING',
+                                                        'dataSourceFieldName': 'title',
+                                                    },
+                                                ],
+                                            },
+                                        },
+                                        'additionalProperties': {
+                                            'rateLimit': '300',
+                                            'maxFileSize': '50',
+                                            'crawlDepth': '2',
+                                            'maxLinksPerUrl': '100',
+                                            'crawlSubDomain': True,
+                                            'crawlAllDomain': False,
+                                            'honorRobots': True,
+                                            'crawlAttachments': False,
+                                        },
+                                    }
+                                )
+                                
+                                data_source_id = data_source_response['dataSourceId']
+                                data_sources.append({
+                                    'id': data_source_id,
+                                    'name': base_name,
+                                    'urls': len(urls)
+                                })
+                                
+                                logger.info(f"Created data source {base_name} with ID {data_source_id}")
+                        except Exception as e:
+                            logger.error(f"Failed to process file {key}: {str(e)}")
+                            continue
+            
+            send_response(event, context, 'SUCCESS', {
+                'DataSources': json.dumps(data_sources),
+                'DataSourceCount': str(len(data_sources))
+            }, f"{application_id}-data-sources")
+            
+        elif request_type == 'Delete':
+            send_response(event, context, 'SUCCESS', {}, event.get('PhysicalResourceId', 'deleted'))
+            
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        send_response(event, context, 'FAILED', reason=str(e))
+`),
+      timeout: cdk.Duration.minutes(15),
+      role: dataSourceCreatorRole,
+    })
+
+    const dataSourcesCustomResource = new cdk.CustomResource(this, "DataSourcesCustomResource", {
+      serviceToken: dataSourceCreator.functionArn,
+      properties: {
+        BucketName: dataBucket.bucketName,
+        ApplicationId: qBusinessApp.attrApplicationId,
+        IndexId: qBusinessIndex.attrIndexId,
+        WebCrawlerRoleArn: webCrawlerRole.roleArn,
+        ProjectName: projectName,
+      },
+    })
+
+    dataSourcesCustomResource.node.addDependency(urlFilesDeployment)
+
     const lambdaRole = new iam.Role(this, "LambdaExecutionRole", {
       assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole")],
@@ -200,7 +420,22 @@ export class CatholicCharitiesStack extends cdk.Stack {
       description: "Catholic Charities Q Business Chat Handler",
     })
 
-    // LAMBDA 2: Amplify Deployer (Essential)
+    const api = new apigateway.RestApi(this, "ChatAPI", {
+      restApiName: `${projectName}-api`,
+      description: "Catholic Charities Chatbot API",
+      defaultCorsPreflightOptions: {
+        allowOrigins: apigateway.Cors.ALL_ORIGINS,
+        allowMethods: apigateway.Cors.ALL_METHODS,
+        allowHeaders: ["Content-Type", "X-Amz-Date", "Authorization", "X-Api-Key", "X-Amz-Security-Token"],
+      },
+    })
+
+    const lambdaIntegration = new apigateway.LambdaIntegration(chatLambda)
+    const chatResource = api.root.addResource("chat")
+    chatResource.addMethod("POST", lambdaIntegration)
+    const healthResource = api.root.addResource("health")
+    healthResource.addMethod("GET", lambdaIntegration)
+
     const amplifyDeployerRole = new iam.Role(this, "AmplifyDeployerRole", {
       assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole")],
@@ -278,14 +513,15 @@ def handler(event, context):
             
             if object_key and object_key.startswith('builds/') and object_key.endswith('.zip'):
                 app_id = os.environ.get('AMPLIFY_APP_ID')
-                branch_name = os.environ.get('AMPLIFY_BRANCH_NAME', 'main')
                 
-                if not app_id or app_id == 'placeholder':
+                if not app_id:
                     logger.error("AMPLIFY_APP_ID environment variable not set")
                     return {
                         'statusCode': 400,
                         'body': json.dumps({'error': 'AMPLIFY_APP_ID not configured'})
                     }
+                
+                branch_name = os.environ.get('AMPLIFY_BRANCH_NAME', 'main')
                 
                 logger.info(f"Starting Amplify deployment for app {app_id}, branch {branch_name}")
                 
@@ -328,30 +564,11 @@ def handler(event, context):
       timeout: cdk.Duration.minutes(5),
       role: amplifyDeployerRole,
       environment: {
-        AMPLIFY_APP_ID: "placeholder", // Will be updated by buildspec
-        AMPLIFY_BRANCH_NAME: amplifyBranchName,
-        AMPLIFY_APP_NAME: amplifyAppName,
+        AMPLIFY_APP_ID: "placeholder",
+        AMPLIFY_BRANCH_NAME: "main",
       },
     })
 
-    // API Gateway
-    const api = new apigateway.RestApi(this, "ChatAPI", {
-      restApiName: `${projectName}-api`,
-      description: "Catholic Charities Chatbot API",
-      defaultCorsPreflightOptions: {
-        allowOrigins: apigateway.Cors.ALL_ORIGINS,
-        allowMethods: apigateway.Cors.ALL_METHODS,
-        allowHeaders: ["Content-Type", "X-Amz-Date", "Authorization", "X-Api-Key", "X-Amz-Security-Token"],
-      },
-    })
-
-    const lambdaIntegration = new apigateway.LambdaIntegration(chatLambda)
-    const chatResource = api.root.addResource("chat")
-    chatResource.addMethod("POST", lambdaIntegration)
-    const healthResource = api.root.addResource("health")
-    healthResource.addMethod("GET", lambdaIntegration)
-
-    // EventBridge rule to trigger deployment when build.zip is uploaded
     const s3UploadRule = new events.Rule(this, "S3BuildUploadRule", {
       eventPattern: {
         source: ["aws.s3"],
@@ -369,13 +586,11 @@ def handler(event, context):
 
     s3UploadRule.addTarget(new targets.LambdaFunction(amplifyDeployer))
 
-    // Grant EventBridge permission to invoke the Lambda
     amplifyDeployer.addPermission("AllowEventBridgeInvoke", {
       principal: new iam.ServicePrincipal("events.amazonaws.com"),
       sourceArn: s3UploadRule.ruleArn,
     })
 
-    // Outputs
     new cdk.CfnOutput(this, "QBusinessApplicationId", {
       value: qBusinessApp.attrApplicationId,
       description: "Q Business Application ID",
@@ -391,9 +606,9 @@ def handler(event, context):
       description: "Q Business Retriever ID",
     })
 
-    new cdk.CfnOutput(this, "WebCrawlerRoleArn", {
-      value: webCrawlerRole.roleArn,
-      description: "Web Crawler Role ARN for Data Sources",
+    new cdk.CfnOutput(this, "DataSourceInfo", {
+      value: dataSourcesCustomResource.getAttString("DataSources"),
+      description: "Q Business Data Sources Info",
     })
 
     new cdk.CfnOutput(this, "APIGatewayURL", {
@@ -424,16 +639,6 @@ def handler(event, context):
     new cdk.CfnOutput(this, "AmplifyDeployerFunctionName", {
       value: amplifyDeployer.functionName,
       description: "Amplify Deployer Lambda Function Name",
-    })
-
-    new cdk.CfnOutput(this, "AmplifyAppName", {
-      value: amplifyAppName,
-      description: "Amplify App Name",
-    })
-
-    new cdk.CfnOutput(this, "AmplifyBranchName", {
-      value: amplifyBranchName,
-      description: "Amplify Branch Name",
     })
   }
 }

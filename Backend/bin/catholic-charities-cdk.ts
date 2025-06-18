@@ -6,20 +6,15 @@ import { CatholicCharitiesStack } from "../lib/catholic-charities-stack"
 const app = new cdk.App()
 
 // Get parameters from context or environment variables
-const githubOwner = app.node.tryGetContext("githubOwner") || process.env.GITHUB_OWNER 
-const githubRepo = app.node.tryGetContext("githubRepo") || process.env.GITHUB_REPO
+const githubUrl = app.node.tryGetContext("githubUrl") || process.env.GITHUB_URL
 const projectName = app.node.tryGetContext("projectName") || process.env.PROJECT_NAME 
 const urlFilesPath = app.node.tryGetContext("urlFilesPath") || process.env.URL_FILES_PATH 
 const amplifyAppName = app.node.tryGetContext("amplifyAppName") || process.env.AMPLIFY_APP_NAME
 const amplifyBranchName = app.node.tryGetContext("amplifyBranchName") || process.env.AMPLIFY_BRANCH_NAME
 
-if (!githubOwner || !githubRepo) {
-  throw new Error("GitHub owner and repo must be provided via context or environment variables")
-}
 
 new CatholicCharitiesStack(app, "CatholicCharitiesStack", {
-  githubOwner,
-  githubRepo,
+  githubUrl,
   projectName,
   urlFilesPath,
   amplifyAppName,
