@@ -49,11 +49,11 @@ function AppHeader({ showLeftNav, setLeftNav }) {
           <img
             src={CatholicSymbol || "/placeholder.svg"}
             alt="Catholic Symbol"
-            width={isSmallScreen ? "30" : "40"}
-            height={isSmallScreen ? "30" : "40"}
+            width={isSmallScreen ? "50" : "100"}
+            height={isSmallScreen ? "40" : "700"}
           />
           <Typography
-            variant={isSmallScreen ? "h6" : "h5"}
+            variant={isSmallScreen ? "h5" : "h5"}
             sx={{
               fontWeight: "bold",
               color: PRIMARY_MAIN,
@@ -64,23 +64,6 @@ function AppHeader({ showLeftNav, setLeftNav }) {
             Catholic Charity USA
           </Typography>
         </Box>
-
-        {/* Right side with user button */}
-        <Button
-          variant="contained"
-          endIcon={<KeyboardArrowDownIcon fontSize={isSmallScreen ? "small" : "medium"} />}
-          sx={{
-            backgroundColor: PRIMARY_MAIN,
-            borderRadius: "2rem",
-            padding: isSmallScreen ? "0.25rem 0.75rem" : "0.5rem 1.5rem",
-            textTransform: "none",
-            fontWeight: "bold",
-            fontSize: isSmallScreen ? "0.8rem" : "0.9rem",
-            minWidth: isSmallScreen ? "60px" : "auto",
-          }}
-        >
-          USER
-        </Button>
       </Toolbar>
     </AppBar>
   )
