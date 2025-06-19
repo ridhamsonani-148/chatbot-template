@@ -56,7 +56,7 @@ export const TEXT = {
   APP_ASSISTANT_NAME: "Catholic Charities AI Assistant",
   ABOUT_US_TITLE: "About us",
   ABOUT_US:
-    "Welcome to the Catholic Charities AI Assistant. We bring together all our services in one place so you can quickly find help or information.",
+    "Welcome to the Catholic Charities AI Assistant. We bring together all our services in one place so you can quickly find help or information.Catholic Charities USA, founded in 1910, is a network of charities serving millions annually with compassion, providing critical support in areas like poverty alleviation, disaster relief, and immigration services, guided by the principles of the Catholic faith.",
   FAQ_TITLE: "FAQs",
   FAQS: [
     "How do I apply for assistance?",
